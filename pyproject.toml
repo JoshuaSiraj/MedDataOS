@@ -1,0 +1,30 @@
+[project]
+name = "meddataos"
+version = "0.1.0"
+description = "Web UI for one local case. The server opens a folder with med-datactrl."
+authors = [{ name = "Joshua Siraj", email = "joshua.siraj@ryerson.ca" }]
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.104.0,<1",
+    "uvicorn[standard]>=0.24.0,<1",
+    "python-multipart>=0.0.6,<1",
+    "websockets>=12.0,<18",
+    "python-dotenv>=1.0.0,<2",
+    "med-datactrl>=0.2.0,<0.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0,<10"]
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+# Application sources stay on disk and are run as scripts. The wheel only
+# carries project metadata so an editable install pulls in the dependencies.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

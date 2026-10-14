@@ -55,10 +55,10 @@ async function loadPatients() {
         patients = await res.json();
         renderPatientList();
 
-        // Auto-expand patient from URL param (?patient=P0003), or default to P0001
-        const urlPatientId = new URLSearchParams(window.location.search).get('patient') || 'P0001';
+        // Auto-expand the requested patient, or the first case returned by the server.
+        const urlPatientId = new URLSearchParams(window.location.search).get('patient') || patients[0]?.id;
         const targetPatient = document.querySelector(`.sidebar-patient[data-patient-id="${urlPatientId}"]`)
-            || document.querySelector('.sidebar-patient[data-patient-id="P0001"]');
+            || document.querySelector('.sidebar-patient');
         if (targetPatient) {
             await togglePatient(targetPatient);
             const firstConvo = targetPatient.querySelector('.conversation-item');
@@ -359,7 +359,7 @@ function renderInsightsPanel() {
             card.dataset.pinType = 'citation';
             card.dataset.citation = JSON.stringify(p.citation);
             card.dataset.source = p.source || '';
-            const agentLabel = agentCardLabels[p.citation.agent] || p.citation.agent.replace(/_/g, ' ');
+            const agentLabel = citationLabel(agentCardLabels, p.citation.agent);
             const previewHTML = buildPinPreview(p.citation);
             const annotationText = p.annotations && p.annotations.text ? p.annotations.text : '';
             const annotationTags = p.annotations && p.annotations.tags && p.annotations.tags.length > 0 ? p.annotations.tags : [];
@@ -631,12 +631,16 @@ function connectWebSocket() {
 // Handle WebSocket messages
 function handleWebSocketMessage(data) {
     // Skip initial connection messages
-    if (data.type === 'system' && data.message === 'Connected to MedDataOS Monitor') {
+    if (data.type === 'system' && data.message === 'Connected to MedDataOS') {
         return;
     }
 
     // Handle assistant messages - show as chat bubble only
     if (data.type === 'assistant') {
+        if (data.session_id && data.session_id !== sessionId) {
+            return;
+        }
+
         removeTypingIndicator();
         isProcessing = false;
         updateSendButton();
@@ -731,6 +735,11 @@ function removeFile() {
     fileInput.value = '';
     fileAttachment.style.display = 'none';
     fileName.textContent = '';
+}
+
+function citationLabel(labels, agent) {
+    if (!agent) return 'Source';
+    return labels[agent] || String(agent).replace(/_/g, ' ');
 }
 
 // Agent ID → short display label for citation badges
@@ -912,7 +921,7 @@ function getCitationConflict(citation) {
     const bus = citation.knowledge_bus;
     if (!bus || !bus.contradicted_by || !bus.contradicted_by.length) return null;
     const first = bus.contradicted_by[0];
-    const label = agentBadgeLabels[first.agent] || first.agent.replace(/_/g, ' ');
+    const label = citationLabel(agentBadgeLabels, first.agent);
     return { count: bus.contradicted_by.length, firstAgent: label, finding: first.finding };
 }
 
@@ -925,7 +934,7 @@ function renderWithCitations(html, citations) {
         const citation = citationMap[id];
         if (!citation) return match;
         const data = encodeURIComponent(JSON.stringify(citation));
-        const label = agentBadgeLabels[citation.agent] || citation.agent.replace(/_/g, ' ');
+        const label = citationLabel(agentBadgeLabels, citation.agent);
         const dateStr = getCitationDate(citation);
         return `<span class="citation-group"><sup class="citation" data-citation="${data}">${escapeHtml(label)}</sup>${dateStr ? `<span class="citation-date">${dateStr}</span>` : ''}</span>`;
     });
@@ -1008,7 +1017,7 @@ async function showCitationPopup(anchor, citation) {
     clearTimeout(hideTimeout);
 
     const type = getCitationType(citation.file);
-    const agentLabel = agentCardLabels[citation.agent] || citation.agent.replace(/_/g, ' ');
+    const agentLabel = citationLabel(agentCardLabels, citation.agent);
 
     // Build initial content (immediate for media, loading state for text/csv)
     let contentHTML = '';
@@ -1482,7 +1491,7 @@ async function openCitationModal(citation, pin = null) {
     currentModalPin = pin;
 
     const type = getCitationType(citation.file);
-    const agentLabel = agentCardLabels[citation.agent] || citation.agent.replace(/_/g, ' ');
+    const agentLabel = citationLabel(agentCardLabels, citation.agent);
 
     modalAgent.textContent = agentLabel;
 
@@ -1682,7 +1691,7 @@ function renderAnnotationTags(activeTags) {
 function buildProvenanceHTML(citation) {
     const steps = provenanceSteps[citation.agent] || [];
     const bus = citation.knowledge_bus || { supported_by: [], contradicted_by: [] };
-    const agentLabel = agentBadgeLabels[citation.agent] || citation.agent.replace(/_/g, ' ');
+    const agentLabel = citationLabel(agentBadgeLabels, citation.agent);
 
     // Map agent name to data_dates directory key
     const agentToDirKey = (agent) => {
@@ -1731,7 +1740,7 @@ function buildProvenanceHTML(citation) {
 
     // Helper: build a mini citation badge for a KB entry agent
     const buildKBBadge = (entry) => {
-        const entryAgent = agentBadgeLabels[entry.agent] || entry.agent.replace(/_/g, ' ');
+        const entryAgent = citationLabel(agentBadgeLabels, entry.agent);
         const entryDate = getAgentDate(entry.agent);
         // Try to build a citation object for hover
         const citObj = buildCitationForAgent(entry.agent);

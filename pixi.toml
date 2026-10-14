@@ -1,0 +1,18 @@
+[workspace]
+authors = ["Joshua Siraj <joshua.siraj@ryerson.ca>"]
+channels = ["conda-forge"]
+name = "MedDataOS"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[dependencies]
+python = ">=3.13,<3.14"
+
+[pypi-dependencies]
+meddataos = { path = ".", editable = true, extras = ["dev"] }
+med-datactrl = { path = "../med-datactrl", editable = true }
+
+[tasks]
+serve = "python web/backend/server.py"
+agent = "python examples/agent.py"
+test = "pytest tests"
