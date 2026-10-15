@@ -115,7 +115,7 @@ function showPatientTooltip(headerEl, patient) {
         patientTooltip.innerHTML = `
             <div class="patient-tooltip-header">
                 <span class="patient-tooltip-name">${escapeHtml(patient.name)}</span>
-                <span class="patient-tooltip-demo">${patient.age} · ${patient.sex}${patient.blood_type ? ' · ' + patient.blood_type : ''}</span>
+                <span class="patient-tooltip-demo">${escapeHtml([patient.age, patient.sex, patient.blood_type].filter(Boolean).join(' · '))}</span>
             </div>
             <div class="patient-tooltip-section">
                 <span class="patient-tooltip-label">Conditions</span>
@@ -170,7 +170,7 @@ function renderPatientList() {
             <div class="sidebar-patient-header">
                 <span class="sidebar-patient-arrow">▶</span>
                 <span class="sidebar-patient-name">${escapeHtml(p.name)}</span>
-                <span class="sidebar-patient-meta">${p.age}, ${p.sex}</span>
+                <span class="sidebar-patient-meta">${escapeHtml(patientMeta(p))}</span>
             </div>
             <div class="sidebar-patient-body">
                 <div class="conversation-list"></div>
@@ -180,11 +180,32 @@ function renderPatientList() {
 
         // Tooltip hover handlers
         const header = div.querySelector('.sidebar-patient-header');
-        header.addEventListener('mouseenter', () => showPatientTooltip(header, p));
+        header.addEventListener('mouseenter', () => showPatientTooltip(header, patientDataMap[p.id]));
         header.addEventListener('mouseleave', hidePatientTooltip);
 
         sidebarContent.appendChild(div);
     });
+}
+
+function patientMeta(p) {
+    return [p.age, p.sex].filter(Boolean).join(', ');
+}
+
+// The server pushes the card again once the agent has read the files.
+function updatePatient(p) {
+    patients = patients.map(existing => existing.id === p.id ? p : existing);
+    patientDataMap[p.id] = p;
+
+    const div = document.querySelector(`.sidebar-patient[data-patient-id="${CSS.escape(p.id)}"]`);
+    if (!div) return;
+
+    div.dataset.patientName = p.name;
+    div.querySelector('.sidebar-patient-name').textContent = p.name;
+    div.querySelector('.sidebar-patient-meta').textContent = patientMeta(p);
+
+    if (activePatientId === p.id) {
+        activePatientLabel.textContent = `— ${p.name}`;
+    }
 }
 
 // Keep tooltip open when hovering over it
@@ -530,6 +551,7 @@ async function switchConversation(patientId, sid) {
 
     // Clear chat and load history
     chatContainer.innerHTML = '';
+    let waiting = false;
     try {
         const res = await fetch(`/api/session/${sid}`);
         const data = await res.json();
@@ -537,10 +559,12 @@ async function switchConversation(patientId, sid) {
             data.history.forEach(msg => {
                 addChatMessage(msg.role, msg.content, msg.timestamp);
             });
+            waiting = !!data.processing;
         }
     } catch (e) {
         console.error('Failed to load session:', e);
     }
+    setProcessing(waiting);
     highlightPinnedText();
     updateCitationBadgeStates();
 }
@@ -608,6 +632,7 @@ function connectWebSocket() {
         console.log('WebSocket connected');
         updateConnectionStatus(true);
         updateSendButton();
+        resyncSession();
     };
 
     ws.onmessage = (event) => {
@@ -635,15 +660,22 @@ function handleWebSocketMessage(data) {
         return;
     }
 
+    if (data.type === 'patient' && data.patient) {
+        updatePatient(data.patient);
+        return;
+    }
+
     // Handle assistant messages - show as chat bubble only
     if (data.type === 'assistant') {
         if (data.session_id && data.session_id !== sessionId) {
             return;
         }
+        // Already shown by resyncSession.
+        if (!isProcessing) {
+            return;
+        }
 
-        removeTypingIndicator();
-        isProcessing = false;
-        updateSendButton();
+        setProcessing(false);
         addChatMessage('assistant', data.message, data.timestamp || new Date().toISOString());
         updateCitationBadgeStates();
         // Refresh sidebar to update conversation preview
@@ -930,7 +962,7 @@ function renderWithCitations(html, citations) {
     const citationMap = {};
     citations.forEach(c => { citationMap[c.id] = c; });
 
-    return html.replace(/\[cite:(\w+)\]/g, (match, id) => {
+    return html.replace(/\[cite:([^\]]+)\]/g, (match, id) => {
         const citation = citationMap[id];
         if (!citation) return match;
         const data = encodeURIComponent(JSON.stringify(citation));
@@ -1110,16 +1142,68 @@ function removeTypingIndicator() {
     if (indicator) indicator.remove();
 }
 
+function setProcessing(value) {
+    isProcessing = value;
+    if (value) showTypingIndicator(); else removeTypingIndicator();
+    updateSendButton();
+}
+
+// The socket can miss an answer (reconnect, server restart), so ask the server
+// whether the open conversation is still waiting.
+async function resyncSession() {
+    if (!isProcessing || !sessionId) return;
+    const sid = sessionId;
+
+    try {
+        const res = await fetch(`/api/session/${sid}`);
+        const data = await res.json();
+        if (sid !== sessionId || !isProcessing) return;
+
+        if (data.status !== 'success') {
+            setProcessing(false);
+            return;
+        }
+        if (data.processing) return;
+
+        const answer = data.history[data.history.length - 1];
+        removeTypingIndicator();
+        if (answer && answer.role === 'assistant') {
+            addChatMessage('assistant', answer.content, answer.timestamp);
+            updateCitationBadgeStates();
+        }
+        setProcessing(false);
+        refreshSidebarConversations();
+    } catch (e) {
+        console.error('Failed to check session:', e);
+    }
+}
+
 function renderAssistantContent(rawContent) {
     let responseText = rawContent;
     let citations = [];
-    try {
-        const parsed = JSON.parse(rawContent);
-        if (parsed.response && parsed.citations) {
-            responseText = parsed.response;
-            citations = parsed.citations;
+    const cut = rawContent.search(/\n\s*\{/);
+    const candidates = [rawContent];
+    if (cut !== -1) candidates.push(rawContent.slice(cut).trim());
+
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            if (parsed.response && parsed.citations) {
+                responseText = parsed.response;
+                citations = parsed.citations;
+                break;
+            }
+            if (!parsed.citations) {
+                const text = parsed.message || parsed.response || parsed.text;
+                if (typeof text === 'string' && text.trim()) {
+                    responseText = text;
+                    break;
+                }
+            }
+        } catch (e) {
+            if (cut !== -1) responseText = rawContent.slice(0, cut).trim();
         }
-    } catch (e) { /* plain text, use as-is */ }
+    }
 
     const rawHtml = marked.parse(responseText);
     const safeHtml = DOMPurify.sanitize(rawHtml);
@@ -1312,6 +1396,7 @@ function clearChat() {
     activePatientId = null;
     activePatientLabel.textContent = '';
     localStorage.removeItem('meddata_session_id');
+    setProcessing(false);
     // Clear attached file
     removeFile();
     // Remove active highlight from sidebar
@@ -2165,4 +2250,5 @@ messageInput.addEventListener('keydown', (e) => {
 // Initialize
 connectWebSocket();
 loadPatients();
+setInterval(resyncSession, 5000);
 

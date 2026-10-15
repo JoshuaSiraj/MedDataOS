@@ -1,37 +1,41 @@
-"""UI server. Open one folder with datactrl, then let outside agents reply."""
+"""UI server. Open one folder with datactrl and ask the agent at --agent-url."""
 
 from __future__ import annotations
 
+import argparse
 import os
-import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from case_view import patient
-from routers import agents, chat, pages, patients
-from routers.agents import AGENT_TOOLS
-from state import state
+import dispatch
+import routes
+from case import case
+from state import APP_ROOT, state
 
 
-app = FastAPI(title="MedDataOS")
+load_dotenv(APP_ROOT / ".env")
 
-frontend_path = Path(__file__).resolve().parent.parent / "frontend"
-app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    dispatch.fill_card()
+    yield
 
-app.include_router(pages.router)
-app.include_router(chat.router)
-app.include_router(patients.router)
-app.include_router(agents.router)
+
+app = FastAPI(title="MedDataOS", lifespan=lifespan)
+
+app.mount("/static", StaticFiles(directory=str(routes.FRONTEND)), name="static")
+app.include_router(routes.router)
 
 
 def log_launch(root: Path, shown: str, port: int) -> None:
     """Print the opened case and where to reach it. Flushed so it shows before uvicorn."""
     report = state.report or {}
     counts = report.get("counts") or {}
-    card = patient() or {}
 
     print(f"Case: {root}", flush=True)
     print(
@@ -55,19 +59,23 @@ def log_launch(root: Path, shown: str, port: int) -> None:
         reason = item.get("reason", "") if isinstance(item, dict) else ""
         print(f"  {'unknown':<12} {path}  {reason}", flush=True)
 
-    names = ", ".join(tool["function"]["name"] for tool in AGENT_TOOLS)
-
-    print(f"Patient: {card.get('name') or root.name}", flush=True)
-    print(f"Agents: ws://{shown}:{port}/ws/agent", flush=True)
-    print(f"Tools: {names}", flush=True)
+    print(f"Agent: {state.agent_url} model={os.getenv('AGENT_MODEL') or '?'}", flush=True)
+    print(f"Tools: {', '.join(case.tool_names)}", flush=True)
     print(f"Web UI: http://{shown}:{port}/?patient={quote(root.name)}", flush=True)
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: python web/backend/server.py /path/to/folder")
+    parser = argparse.ArgumentParser(description="MedDataOS")
+    parser.add_argument("folder", help="Case folder to open")
+    parser.add_argument(
+        "--agent-url",
+        required=True,
+        help="OpenAI-compatible base URL, the part before /chat/completions",
+    )
+    args = parser.parse_args()
 
-    root = state.open(sys.argv[1])
+    state.agent_url = args.agent_url.rstrip("/")
+    root = state.open(args.folder)
     app.mount("/case", StaticFiles(directory=str(root)), name="case")
 
     import uvicorn
