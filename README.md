@@ -52,6 +52,8 @@ sequenceDiagram
 
 If the agent opens no files, it answers in plain text. If it still can't cite correctly after three tries, or the agent can't be reached, the page shows that instead of waiting.
 
-The server only talks to the agent at `--agent-url`. [Connect an agent](docs/agents.md) describes that call. `pixi run agent` serves `examples/agent.py` there and forwards each question to `OPENAI_MODEL`. Point `--agent-url` straight at another endpoint instead, such as `http://127.0.0.1:11434/v1` for Ollama.
+The page talks only to the agent at `--agent-url`. That agent is the router. Optional specialists, each an OpenAI-compatible endpoint, are registered with `--agents` or repeated `--specialist name=url` flags. The router calls them through `consult_<name>` tools; the server runs those calls, keeps specialists from calling each other, and still checks citations before the page shows the answer. [Connect an agent](docs/agents.md) describes both the single-agent call and the specialist registry.
+
+`pixi run agent` serves `examples/agent.py` at `--agent-url` and forwards each question to `OPENAI_MODEL`, or to Azure OpenAI when `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_DEPLOYMENT` are set. Point `--agent-url` straight at another endpoint instead, such as `http://127.0.0.1:11434/v1` for Ollama. The clinical notes specialist is `python -m src.agents.notes.serve --case /path/to/case` in the MedDataOS repo; register it with `--specialist notes=http://127.0.0.1:8002/v1`.
 
 `pixi run test` starts the server on a small folder and talks to it as the page, as an agent, and as a fake model.

@@ -3,7 +3,8 @@
 The FastAPI backend opens one local case folder and serves the vanilla
 JavaScript UI. Each question goes to the OpenAI-compatible endpoint
 passed as `--agent-url`, which reads the case with the server's
-`med-datactrl` tools.
+`med-datactrl` tools. Further agents are registered with `--agents` or
+`--specialist` and the router calls them; see [Connect an agent](../docs/agents.md).
 
 From the project root:
 
