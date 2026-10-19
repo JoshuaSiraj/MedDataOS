@@ -115,8 +115,20 @@ class Case:
         }
 
     def files(self) -> list[dict]:
+        """Files the agent may cite. Reads the inventory lists discover actually returns."""
         if state.report is None:
             return []
+
+        rows = state.report.get("resources")
+
+        if not isinstance(rows, list):
+            rows = []
+
+            for key in ("notes", "structured", "dicom"):
+                found = state.report.get(key) or []
+
+                if isinstance(found, list):
+                    rows.extend(found)
 
         return [
             {
@@ -125,7 +137,8 @@ class Case:
                 "label": ref.get("label"),
                 "web_path": web_path(ref.get("path", "")),
             }
-            for ref in state.report.get("resources", [])
+            for ref in rows
+            if isinstance(ref, dict)
         ]
 
     def patient(self) -> Patient | None:
