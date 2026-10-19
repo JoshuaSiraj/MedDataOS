@@ -1,5 +1,7 @@
 """Web routes: the page and its socket, chat, and the sidebar data."""
 
+import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -54,6 +56,126 @@ async def browser_socket(websocket: WebSocket):
     finally:
         state.hub.disconnect(websocket)
         log("page", f"disconnected ({len(state.hub.connections)} open){reason}")
+
+
+def _opened_case():
+    """The datactrl case for span reads. Opened once and kept on the process."""
+    if state.root is None:
+        return None
+    opened = getattr(state, "datactrl_case", None)
+    if opened is None:
+        from datactrl import Case
+
+        opened = Case.open(state.root)
+        state.datactrl_case = opened
+    return opened
+
+
+def _ledger_files(patient_id: str):
+    """Places a patient's ledger might have been saved, nearest folders first."""
+    filename = f"{patient_id}.json"
+    configured = os.environ.get("NOTES_LEDGER_DIR")
+    if configured:
+        yield Path(configured) / filename
+    if state.root is None:
+        return
+    stop = {Path.home(), Path(state.root.anchor)}
+    ancestors = []
+    for parent in [state.root, *state.root.parents]:
+        if parent in stop or len(ancestors) >= 6:
+            break
+        ancestors.append(parent)
+    for parent in ancestors:
+        yield parent / "workspace" / "notes_ledger" / filename
+        try:
+            children = [child for child in parent.iterdir() if child.is_dir()]
+        except OSError:
+            continue
+        for child in children:
+            yield child / "workspace" / "notes_ledger" / filename
+
+
+def _ocr_doc(patient_id: str, doc_id: str) -> dict | None:
+    """OCR transcript stored in the notes ledger, when that file is on disk."""
+    for path in _ledger_files(patient_id):
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        doc = (data.get("docs") or {}).get(doc_id)
+        if isinstance(doc, dict) and isinstance(doc.get("text"), str):
+            return doc
+    return None
+
+
+def note_span_payload(patient_id: str, doc_id: str, start: int, end: int, context: int = 0):
+    """One note with highlight offsets, or an error dict and status code."""
+    opened = _opened_case()
+    if opened is None or state.root is None or state.root.name != patient_id:
+        return 404, {"error": "that case is not open"}
+
+    base_id = doc_id.split("#", 1)[0]
+    ref = next((note for note in opened.report.notes if note.id == base_id), None)
+    if ref is None:
+        return 404, {"error": f"unknown note id {doc_id}"}
+
+    meta = ref.meta if isinstance(ref.meta, dict) else {}
+    label = ref.label
+    derived = "native"
+    page_index = None
+
+    if "#" in doc_id:
+        doc = _ocr_doc(patient_id, doc_id)
+        if doc is None:
+            return 404, {"error": f"no OCR transcript for {doc_id}"}
+        text = doc["text"]
+        label = doc.get("label") or label
+        derived = doc.get("derived") or "ocr"
+        page_index = doc.get("page_index")
+    else:
+        from datactrl.limits import MAX_NOTE_CHARS
+
+        try:
+            fetched = opened.fetch(doc_id, view="text", max_chars=MAX_NOTE_CHARS)
+            text = (fetched.get("data") or {}).get("text") or ""
+        except Exception as exc:
+            return 400, {"error": str(exc)}
+
+    if not (0 <= start < end <= len(text)):
+        return 400, {"error": f"span {start}-{end} outside document ({len(text)} chars)"}
+
+    if context > 0:
+        lo, hi = max(0, start - context), min(len(text), end + context)
+    else:
+        lo, hi = 0, len(text)
+
+    return 200, {
+        "note_id": doc_id,
+        "label": label,
+        "note_date": meta.get("note_date"),
+        "note_type": meta.get("note_type"),
+        "derived": derived,
+        "page_index": page_index,
+        "text": text[lo:hi],
+        "offset": lo,
+        "highlight": {"start": start - lo, "end": end - lo},
+        "truncated_before": lo > 0,
+        "truncated_after": hi < len(text),
+    }
+
+
+@router.get("/api/cases/{patient_id}/notes/span")
+async def note_span(patient_id: str, id: str, start: int, end: int, context: int = 0):
+    """Highlighted source note for a clinical-notes citation."""
+    status, payload = note_span_payload(patient_id, id, start, end, context)
+    if status != 200:
+        return JSONResponse(status_code=status, content=payload)
+    return payload
 
 
 @router.get("/api/health")
