@@ -39,18 +39,32 @@ def case_folder(tmp_path_factory) -> Path:
 
 
 @contextmanager
-def running_server(case_folder, agent_url="http://127.0.0.1:9/v1", **settings):
+def running_server(
+    case_folder,
+    agent_url="http://127.0.0.1:9/v1",
+    specialists=None,
+    agents_file=None,
+    **settings,
+):
     port = _free_port()
     env = {key: value for key, value in os.environ.items() if key != "AGENT_URL"}
     env.update(HOST="127.0.0.1", PORT=str(port), **settings)
+    command = [
+        sys.executable,
+        str(APP / "web" / "backend" / "server.py"),
+        str(case_folder),
+        "--agent-url",
+        agent_url,
+    ]
+
+    if agents_file:
+        command.extend(["--agents", agents_file])
+
+    for specialist in specialists or []:
+        command.extend(["--specialist", specialist])
+
     process = subprocess.Popen(
-        [
-            sys.executable,
-            str(APP / "web" / "backend" / "server.py"),
-            str(case_folder),
-            "--agent-url",
-            agent_url,
-        ],
+        command,
         cwd=APP,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -565,3 +579,381 @@ def test_an_unreachable_agent_is_reported(server):
     answer = wait_for_answer(server, session_id)["history"][-1]
 
     assert "could not reach" in answer["content"]
+
+
+def test_server_rejects_a_bad_specialist_name(case_folder):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(APP / "web" / "backend" / "server.py"),
+            str(case_folder),
+            "--agent-url",
+            "http://127.0.0.1:9/v1",
+            "--specialist",
+            "Notes=http://127.0.0.1:9/v1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert "lowercase" in result.stderr
+
+
+def _question_bodies(handler, question: str) -> list[dict]:
+    return [
+        body for body in handler.requests
+        if any(
+            message.get("role") == "user" and message.get("content") == question
+            for message in body.get("messages", [])
+        )
+    ]
+
+
+class Router(BaseHTTPRequestHandler):
+    """Router fake: calls the specialist named by a tag in the question."""
+
+    requests: list[dict] = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        Router.requests.append(body)
+        status, payload = self.respond(body)
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def respond(self, body: dict) -> tuple[int, dict]:
+        messages = body["messages"]
+        question = next(item["content"] for item in messages if item["role"] == "user")
+        tool_msgs = [item for item in messages if item["role"] == "tool"]
+
+        if question == "Fill in the patient card." and not tool_msgs:
+            return 200, FakeAgent.message(content="```json\n" + json.dumps(CARD) + "\n```")
+
+        if not tool_msgs:
+            calls = []
+
+            if "[notes]" in question or "[badcite]" in question:
+                calls.append(self._consult("notes", "call_notes", question))
+
+            if "[twice]" in question:
+                calls.append(self._consult("notes", "call_notes_2", question))
+
+            if "[scan]" in question:
+                calls.append(self._consult("imaging", "call_imaging", question))
+
+            if calls:
+                return 200, FakeAgent.message(tool_calls=calls)
+
+            return 200, FakeAgent.message(content="Plain answer.")
+
+        parsed = [json.loads(item["content"]) for item in tool_msgs]
+        ok = [
+            item["result"] for item in parsed
+            if item.get("status") == "ok" and isinstance(item.get("result"), str)
+        ]
+        errors = [item["message"] for item in parsed if item.get("status") == "error"]
+        cited = next((item for item in ok if "[cite:" in item), None)
+
+        if cited:
+            payload = json.loads(cited)
+
+            if errors:
+                payload["response"] = "Imaging specialist failed. " + payload["response"]
+
+            return 200, FakeAgent.message(content=json.dumps(payload))
+
+        if errors:
+            return 200, FakeAgent.message(content="Specialist failed: " + errors[0])
+
+        return 200, FakeAgent.message(content="Plain answer.")
+
+    @staticmethod
+    def _consult(name: str, call_id: str, question: str) -> dict:
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": f"consult_{name}",
+                "arguments": json.dumps({"question": question}),
+            },
+        }
+
+    def log_message(self, *args):
+        pass
+
+
+class NotesSpecialist(BaseHTTPRequestHandler):
+    """Returns a citation for the clinic note, or for a file that is not in the case."""
+
+    requests: list[dict] = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        NotesSpecialist.requests.append(body)
+        question = next(item["content"] for item in body["messages"] if item["role"] == "user")
+        path = "/case/missing.txt" if "[badcite]" in question else "/case/clinic_note.txt"
+        data = json.dumps(FakeAgent.message(content=cited_note(path))).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+class ImagingSpecialist(BaseHTTPRequestHandler):
+    """Always fails, the way a specialist process that is down would."""
+
+    requests: list[dict] = []
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        ImagingSpecialist.requests.append(json.loads(self.rfile.read(length) or b"{}"))
+        data = json.dumps({"error": {"message": "imaging model down"}}).encode()
+        self.send_response(500)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture(scope="module")
+def routing_server(case_folder, tmp_path_factory):
+    Router.requests = []
+    NotesSpecialist.requests = []
+    ImagingSpecialist.requests = []
+    router = ThreadingHTTPServer(("127.0.0.1", 0), Router)
+    notes = ThreadingHTTPServer(("127.0.0.1", 0), NotesSpecialist)
+    imaging = ThreadingHTTPServer(("127.0.0.1", 0), ImagingSpecialist)
+
+    for endpoint in (router, notes, imaging):
+        threading.Thread(target=endpoint.serve_forever, daemon=True).start()
+
+    config = tmp_path_factory.mktemp("routing") / "agents.toml"
+    config.write_text(
+        "\n".join([
+            "[notes]",
+            f'url = "http://127.0.0.1:{notes.server_address[1]}/v1"',
+            'description = "Answers from clinical notes."',
+            "",
+            "[imaging]",
+            f'url = "http://127.0.0.1:{imaging.server_address[1]}/v1"',
+            'description = "Interprets imaging."',
+            "",
+        ])
+    )
+
+    try:
+        with running_server(
+            case_folder,
+            agent_url=f"http://127.0.0.1:{router.server_address[1]}/v1",
+            agents_file=str(config),
+            AGENT_MODEL="router",
+        ) as running:
+            yield running
+    finally:
+        for endpoint in (router, notes, imaging):
+            endpoint.shutdown()
+
+
+def test_router_cites_notes_and_reports_an_imaging_failure(routing_server):
+    question = "[notes][scan] What do the note and the scan show?"
+    session_id = send_chat(routing_server, question)["session_id"]
+    answer = json.loads(wait_for_answer(routing_server, session_id)["history"][-1]["content"])
+
+    assert "Imaging specialist failed" in answer["response"]
+    assert "[cite:1]" in answer["response"]
+    assert answer["citations"][0]["web_path"].endswith("clinic_note.txt")
+
+    router_tools = _question_bodies(Router, question)[0]["tools"]
+    tool_names = [tool["function"]["name"] for tool in router_tools]
+    assert "consult_notes" in tool_names
+    assert "consult_imaging" in tool_names
+    assert "fetch" in tool_names
+    notes_tool = next(tool for tool in router_tools if tool["function"]["name"] == "consult_notes")
+    assert notes_tool["function"]["description"] == "Answers from clinical notes."
+
+    notes_call = _question_bodies(NotesSpecialist, question)
+    assert len(notes_call) == 1
+    specialist_tools = [tool["function"]["name"] for tool in notes_call[0]["tools"]]
+    assert "fetch" in specialist_tools
+    assert all(not name.startswith("consult_") for name in specialist_tools)
+    assert len(_question_bodies(ImagingSpecialist, question)) == 1
+
+
+def test_a_specialist_is_consulted_once_per_question(routing_server):
+    question = "[notes][twice] Read the note twice"
+    session_id = send_chat(routing_server, question)["session_id"]
+    answer = json.loads(wait_for_answer(routing_server, session_id)["history"][-1]["content"])
+
+    assert answer["citations"][0]["web_path"].endswith("clinic_note.txt")
+    assert len(_question_bodies(NotesSpecialist, question)) == 1
+
+    sent_back = next(
+        body for body in _question_bodies(Router, question)
+        if any(item["role"] == "tool" for item in body["messages"])
+    )
+    assistant = next(item for item in sent_back["messages"] if item["role"] == "assistant")
+    assert [call["function"]["name"] for call in assistant["tool_calls"]] == [
+        "consult_notes",
+        "consult_notes",
+    ]
+    tool_messages = [item for item in sent_back["messages"] if item["role"] == "tool"]
+    assert len(tool_messages) == 2
+    assert json.loads(tool_messages[0]["content"])["status"] == "ok"
+    assert json.loads(tool_messages[0]["content"]) == json.loads(tool_messages[1]["content"])
+
+
+def test_a_specialist_citation_outside_the_case_is_an_error(routing_server):
+    question = "[badcite] Cite something else"
+    session_id = send_chat(routing_server, question)["session_id"]
+    answer = wait_for_answer(routing_server, session_id, timeout=20)["history"][-1]
+
+    assert "Specialist failed" in answer["content"]
+    assert "missing.txt" in answer["content"]
+    # The original reply plus three corrections.
+    assert len(_question_bodies(NotesSpecialist, question)) == 4
+
+
+WORKSPACE = APP.parents[1]
+CASE_TCGA = WORKSPACE / "data" / "TCGA-DD-A4NF"
+NOTES_PYTHON = WORKSPACE / "MedDataOS" / "venv" / "bin" / "python"
+
+
+class NotesRouter(BaseHTTPRequestHandler):
+    """Always consults the notes specialist, then shows that reply."""
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        messages = body["messages"]
+        question = next(item["content"] for item in messages if item["role"] == "user")
+        tool_msgs = [item for item in messages if item["role"] == "tool"]
+
+        if question == "Fill in the patient card." and not tool_msgs:
+            content = json.dumps({
+                "name": "TCGA-DD-A4NF",
+                "age": "72",
+                "sex": "M",
+                "blood_type": None,
+                "allergies": [],
+                "conditions": ["HCC"],
+                "data_dates": {},
+            })
+            payload = FakeAgent.message(content=content)
+        elif not tool_msgs:
+            payload = FakeAgent.message(tool_calls=[{
+                "id": "call_notes",
+                "type": "function",
+                "function": {
+                    "name": "consult_notes",
+                    "arguments": json.dumps({"question": question}),
+                },
+            }])
+        else:
+            result = json.loads(tool_msgs[-1]["content"])
+            text = result.get("result") if result.get("status") == "ok" else (
+                "Specialist failed: " + result.get("message", "")
+            )
+            payload = FakeAgent.message(content=text)
+
+        data = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.skipif(
+    os.getenv("NOTES_LIVE_EVAL") != "1",
+    reason="live notes agent: set NOTES_LIVE_EVAL=1",
+)
+def test_notes_agent_answers_a_real_case(tmp_path):
+    """Router calls the real notes specialist on TCGA-DD-A4NF."""
+    question = "What was the histology and grade of the resected liver tumor?"
+    notes_port = _free_port()
+    notes_log = tmp_path / "notes.log"
+    log_handle = notes_log.open("w")
+    notes_root = str(WORKSPACE / "MedDataOS")
+    env = os.environ.copy()
+    env.pop("PYTHONSAFEPATH", None)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONPATH"] = os.pathsep.join(
+        [notes_root, str(WORKSPACE / "src"), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    notes_proc = subprocess.Popen(
+        [
+            str(NOTES_PYTHON if NOTES_PYTHON.exists() else Path(sys.executable)),
+            "-m",
+            "src.agents.notes.serve",
+            "--case",
+            str(CASE_TCGA),
+            "--port",
+            str(notes_port),
+        ],
+        cwd=notes_root,
+        env=env,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+    )
+    router = ThreadingHTTPServer(("127.0.0.1", 0), NotesRouter)
+    threading.Thread(target=router.serve_forever, daemon=True).start()
+    config = tmp_path / "agents.toml"
+    config.write_text(
+        "\n".join([
+            "[notes]",
+            f'url = "http://127.0.0.1:{notes_port}/v1"',
+            'description = "Answers from clinical notes with verified quotes."',
+            "",
+        ])
+    )
+
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if notes_proc.poll() is not None:
+                raise AssertionError(notes_log.read_text()[-2000:])
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{notes_port}/v1/chat/completions", timeout=1)
+            except urllib.error.HTTPError:
+                break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            raise AssertionError("notes agent did not start:\n" + notes_log.read_text()[-2000:])
+
+        with running_server(
+            CASE_TCGA,
+            agent_url=f"http://127.0.0.1:{router.server_address[1]}/v1",
+            agents_file=str(config),
+            AGENT_MODEL="router",
+            AGENT_TIMEOUT="300",
+        ) as server:
+            session_id = send_chat(server, question, patient_id="TCGA-DD-A4NF")["session_id"]
+            answer = wait_for_answer(server, session_id, timeout=300)["history"][-1]["content"]
+
+        parsed = json.loads(answer)
+        text = parsed["response"].lower()
+        assert "hepatocellular" in text or "hcc" in text
+        assert any(token in text for token in ("moderately", "g2", "grade 2"))
+        assert parsed["citations"]
+        assert parsed["citations"][0]["web_path"].startswith("/case/")
+    finally:
+        router.shutdown()
+        notes_proc.terminate()
+        notes_proc.wait(timeout=20)
+        log_handle.close()
