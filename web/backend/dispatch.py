@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 
 from case import Answer, Profile, case
+from registry import Specialist
 from state import log, short_session, state
 
 
@@ -110,11 +111,19 @@ class Conversation:
 
     MAX_STEPS = 8
 
-    def __init__(self, messages: list[dict], session_id: str) -> None:
+    def __init__(
+        self,
+        messages: list[dict],
+        session_id: str,
+        client: AgentClient | None = None,
+        tools: list[dict] | None = None,
+        consult: bool = False,
+    ) -> None:
         self.messages = messages
         self.session_id = session_id
-        self.client = AgentClient.from_env()
-        self.tools = case.tools
+        self.client = client or AgentClient.from_env()
+        self.tools = list(case.tools if tools is None else tools)
+        self.consult = consult
 
     async def reply(self) -> str:
         """Call the agent until it stops asking for tools, then return its text."""
@@ -158,7 +167,162 @@ class Conversation:
         if not isinstance(arguments, dict):
             return {"status": "error", "name": name, "message": "Arguments must be a JSON object"}
 
+        if name.startswith("consult_"):
+            return await self._consult(name, arguments)
+
         return await asyncio.to_thread(case.run, name, arguments, self.session_id)
+
+    async def _consult(self, name: str, arguments: dict) -> dict:
+        """Call one registered specialist. A second call returns the first result."""
+        if not self.consult:
+            return {
+                "status": "error",
+                "name": name,
+                "message": "This agent cannot call another specialist.",
+            }
+
+        specialist_name = name.removeprefix("consult_")
+        specialist = state.specialists.get(specialist_name)
+
+        if specialist is None:
+            return {"status": "error", "name": name, "message": f"Unknown specialist: {specialist_name}"}
+
+        question = arguments.get("question")
+
+        if not isinstance(question, str) or not question.strip():
+            return {"status": "error", "name": name, "message": "question must be a non-empty string"}
+
+        cache = state.consulted.setdefault(self.session_id, {})
+
+        if specialist_name in cache:
+            log("agent", f"session={short_session(self.session_id)} consult {specialist_name} already answered")
+            return cache[specialist_name]
+
+        result = await consult_specialist(specialist, question.strip(), self.session_id)
+        cache[specialist_name] = result
+        return result
+
+
+def router_tools() -> list[dict]:
+    """Datactrl tools, plus one consult tool per registered specialist."""
+    return [*case.tools, *(spec.tool() for spec in state.specialists.values())]
+
+
+def _client_for(url: str) -> AgentClient:
+    return AgentClient(
+        url,
+        os.getenv("AGENT_MODEL", ""),
+        os.getenv("AGENT_API_KEY"),
+        float(os.getenv("AGENT_TIMEOUT", "120")),
+    )
+
+
+_SPECIALIST_RULE = (
+    "The reply may be plain text. "
+    "To cite files, the whole reply is one JSON object with a \"response\" string "
+    "and a \"citations\" list, like the example. "
+    "Put each [cite:id] right after the words that file supports. "
+    "A sentence may cite several files, but never put markers side by side "
+    "or group them at the end of the answer. "
+    "Each citation's web_path must be one of the case files."
+)
+
+
+def specialist_instructions() -> str:
+    """Prompt for a specialist: cite case files, and do not call other agents."""
+    return "\n".join([
+        "You are a specialist answering one question about one patient's medical files. "
+        "Use the tools to read the files when you need them. "
+        "Ground your answer in the files. "
+        "Do not call another specialist.",
+        f"Citation rule: {_SPECIALIST_RULE}",
+        f"Example of a cited reply: {json.dumps(Answer.EXAMPLE)}",
+        f"Case resources: {json.dumps(case.files())}",
+    ])
+
+
+def _remember_citations(session_id: str, text: str) -> None:
+    """Treat files named in an accepted specialist answer as opened for the router."""
+    if session_id not in state.pending:
+        return
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return
+
+    citations = parsed.get("citations") if isinstance(parsed, dict) else None
+
+    if not isinstance(citations, list):
+        return
+
+    known = {item["web_path"]: item for item in case.files()}
+    opened = state.reads.setdefault(session_id, [])
+    seen = {item["web_path"] for item in opened}
+
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+
+        ref = known.get(citation.get("web_path"))
+
+        if ref and ref["web_path"] not in seen:
+            opened.append(ref)
+            seen.add(ref["web_path"])
+
+
+async def consult_specialist(specialist: Specialist, question: str, session_id: str) -> dict:
+    """Ask one specialist, then return its answer or a tool error. Never raises."""
+    label = short_session(session_id)
+    name = f"consult_{specialist.name}"
+    log("server", f"session={label} consult {specialist.name}: {question}")
+    conversation = Conversation(
+        [
+            {"role": "system", "content": specialist_instructions()},
+            {"role": "user", "content": question},
+        ],
+        session_id,
+        client=_client_for(specialist.url),
+        tools=list(case.tools),
+        consult=False,
+    )
+    problem = ""
+
+    try:
+        for attempt in range(1, Question.MAX_REVISIONS + 2):
+            text = message_text(await conversation.reply())
+
+            if not text.strip():
+                problem = "The reply was empty."
+                verdict = None
+            else:
+                verdict = Answer(text, [], case.files())
+                problem = verdict.problem or ""
+
+            if verdict is not None and verdict.problem is None:
+                _remember_citations(session_id, text)
+                log("agent", f"session={label} consult {specialist.name} ok")
+                return {"status": "ok", "name": name, "result": text}
+
+            log("agent", f"session={label} consult {specialist.name} reply {attempt} refused: {problem}")
+            correction = (
+                verdict.correction()
+                if verdict is not None
+                else f"The server refused that answer. {problem}"
+            )
+            conversation.messages += [
+                {"role": "assistant", "content": text},
+                {"role": "user", "content": correction},
+            ]
+    except Exception as exc:
+        log("agent", f"session={label} consult {specialist.name} failed: {exc}")
+        return {"status": "error", "name": name, "message": str(exc)}
+
+    return {
+        "status": "error",
+        "name": name,
+        "message": f"The specialist could not produce valid citations. Last problem: {problem}",
+    }
 
 
 class Question:
@@ -193,6 +357,8 @@ class Question:
             [{"role": "system", "content": self._instructions()}]
             + [{"role": turn["role"], "content": turn["content"]} for turn in history],
             self.session_id,
+            tools=router_tools(),
+            consult=bool(state.specialists),
         )
         problem = ""
 
@@ -226,14 +392,30 @@ class Question:
         except Exception as exc:
             log("server", f"session={self.label} agent failed: {exc}")
             await self._deliver(f"The agent failed: {exc}")
+        finally:
+            state.consulted.pop(self.session_id, None)
 
     def _instructions(self) -> str:
-        return "\n".join([
+        lines = [
             self.PROMPT,
             f"Citation rule: {Answer.RULE}",
             f"Example of a cited reply: {json.dumps(Answer.EXAMPLE)}",
             f"Case resources: {json.dumps(case.files())}",
-        ])
+        ]
+
+        if state.specialists:
+            roster = "; ".join(
+                f"consult_{name}: {spec.description}" for name, spec in state.specialists.items()
+            )
+            lines.append(
+                "Specialists: " + roster + ". "
+                "Call consult_<name> with the part of the question that specialist answers. "
+                "Call each specialist at most once. "
+                "When a specialist returns citation JSON, cite those files in your own reply. "
+                "If a specialist returns an error, say so and answer from the others."
+            )
+
+        return "\n".join(lines)
 
     async def _deliver(self, message: str) -> None:
         """Record the answer once, stop waiting, and push it to every open page."""
