@@ -5,7 +5,10 @@ server. MedDataOS posts each question to /v1/chat/completions. This forwards tha
 OPENAI_BASE_URL and returns the model's message, including any tool calls.
 MedDataOS runs those tools.
 
-OPENAI_MODEL is required. OPENAI_API_KEY is sent when set.
+Set OPENAI_MODEL, or the Azure variables AZURE_OPENAI_API_KEY,
+AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, and optionally
+AZURE_OPENAI_API_VERSION (a date such as 2024-10-21). OPENAI_API_KEY is
+sent when set. Azure uses the api-key header.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import os
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -23,24 +27,41 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def forward(body: dict) -> tuple[int, dict]:
-    """Send one chat completion to the model and return its status and body."""
+def _target() -> tuple[str, dict, str | None]:
+    """Return the chat URL, headers, and model name. Model is None for Azure."""
+    key = os.getenv("AZURE_OPENAI_API_KEY")
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+    if key and endpoint and deployment:
+        version = quote(os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"), safe="")
+        url = (
+            endpoint.rstrip("/")
+            + f"/openai/deployments/{quote(deployment, safe='')}/chat/completions"
+            + f"?api-version={version}"
+        )
+        return url, {"Content-Type": "application/json", "api-key": key}, None
+
     base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     headers = {"Content-Type": "application/json"}
-
     if os.getenv("OPENAI_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['OPENAI_API_KEY']}"
+    return base + "/chat/completions", headers, os.environ["OPENAI_MODEL"]
 
-    outgoing = {
-        "model": os.environ["OPENAI_MODEL"],
-        "messages": body.get("messages") or [],
-    }
+
+def forward(body: dict) -> tuple[int, dict]:
+    """Send one chat completion to the model and return its status and body."""
+    url, headers, model = _target()
+    outgoing = {"messages": body.get("messages") or []}
+
+    if model:
+        outgoing["model"] = model
 
     if body.get("tools"):
         outgoing["tools"] = body["tools"]
 
     request = urllib.request.Request(
-        base + "/chat/completions",
+        url,
         data=json.dumps(outgoing).encode(),
         headers=headers,
     )
@@ -79,8 +100,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    if not os.getenv("OPENAI_MODEL"):
-        raise SystemExit("Set OPENAI_MODEL. This agent forwards questions to that model.")
+    azure = (
+        os.getenv("AZURE_OPENAI_API_KEY")
+        and os.getenv("AZURE_OPENAI_ENDPOINT")
+        and os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    )
+    if not os.getenv("OPENAI_MODEL") and not azure:
+        raise SystemExit(
+            "Set OPENAI_MODEL, or AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, "
+            "and AZURE_OPENAI_DEPLOYMENT."
+        )
 
     parser = argparse.ArgumentParser(description="Example MedDataOS agent")
     parser.add_argument("--host", default="127.0.0.1")
