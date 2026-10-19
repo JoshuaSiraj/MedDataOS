@@ -320,7 +320,7 @@ function updateCitationBadgeStates() {
                 }
             }
             const conflict = getCitationConflict(citation);
-            if (conflict) {
+            if (conflict || notesConflictsToShow(citation).length) {
                 badge.classList.add('citation-has-conflict');
             }
         } catch (e) { /* skip malformed */ }
@@ -810,9 +810,9 @@ const agentFindingsLabel = {
 // Provenance pipeline steps per agent (static processing stages)
 const provenanceSteps = {
     'clinical_notes': [
-        { label: 'Data Origin', desc: 'Physician documentation, EHR export' },
-        { label: 'NLP Extraction', desc: 'Named entity recognition: conditions, medications, vitals' },
-        { label: 'Summarization', desc: 'Key findings extraction, temporal ordering' },
+        { label: 'Ledger', desc: 'Grounded facts compiled from the notes' },
+        { label: 'Timeline and conflicts', desc: 'Dates ordered; disagreements between notes kept' },
+        { label: 'Verified quotes', desc: 'Each claim checked against a span in the source note' },
     ],
     'chest_xray': [
         { label: 'Data Origin', desc: 'Posteroanterior chest radiograph, digital acquisition' },
@@ -851,16 +851,16 @@ const provenanceSteps = {
 // Agent info for tooltip (per agent type) — model-card style
 const agentInfo = {
     'clinical_notes': {
-        model: 'GatorTron 8.9B',
-        modelUrl: 'https://huggingface.co/UFNLP/gatortron-large',
-        purpose: 'Extracts diagnoses, medications, and clinical relationships from unstructured physician notes',
-        input: 'Free-text clinical notes (.txt)',
-        output: 'Named entities (conditions, medications, vitals), clinical relationships, temporal ordering',
-        method: 'Transformer-based clinical NLP trained on 90B words of EHR text',
-        accuracy: 'F1 +7.5% vs ClinicalBERT',
-        paper: 'https://www.nature.com/articles/s41746-022-00742-2',
-        license: 'Apache 2.0',
-        limitations: 'May miss implicit clinical reasoning or abbreviations not seen in training data. Not validated for non-English notes.',
+        model: 'Gemini (compile-then-navigate)',
+        modelUrl: '',
+        purpose: 'Answers questions from the clinical notes with verified, span-level citations',
+        input: 'Clinical notes (.txt, and scanned pages when a transcript exists)',
+        output: 'Verified claims with highlighted source quotes and documented discrepancies',
+        method: 'Grounded fact ledger, timeline, and conflict check. Direct reading for small charts.',
+        accuracy: 'Each claim is span-grounded and entailment-checked',
+        paper: 'https://arxiv.org/abs/2512.24601',
+        license: 'N/A',
+        limitations: 'Extraction can miss facts. Inferred dates are approximate. Advisory only.',
     },
     'chest_xray': {
         model: 'TorchXRayVision',
@@ -945,7 +945,9 @@ function getCitationDate(citation) {
     const parts = citation.web_path.split('/');
     const modalityDir = parts.length >= 3 ? parts[2] : '';
     const date = patient.data_dates[modalityDir];
-    return date ? formatShortDate(date) : '';
+    if (date) return formatShortDate(date);
+    const dated = (citation.evidence || []).find(item => item.note_date);
+    return dated ? formatShortDate(dated.note_date) : '';
 }
 
 // Check if a citation has knowledge_bus conflicts
@@ -1009,6 +1011,123 @@ function plainTextToHTML(text) {
         .join('');
 }
 
+// ── Clinical notes evidence (verified quotes + documented discrepancies) ──
+function hasNotesEvidence(citation) {
+    return Array.isArray(citation.evidence) && citation.evidence.length > 0;
+}
+
+function evidenceSourceLabel(ev) {
+    const date = ev.note_date ? ` \u00B7 ${ev.note_date}` : '';
+    const ocr = ev.derived === 'ocr' ? ' \u00B7 OCR' : '';
+    return `${ev.label || ev.note_id}${date}${ocr}`;
+}
+
+function groupEvidenceByClaim(evidence) {
+    const groups = [];
+    const byN = {};
+    evidence.forEach(ev => {
+        const key = ev.n ?? groups.length + 1;
+        if (!byN[key]) {
+            byN[key] = { n: key, claim: ev.claim, entailment: ev.entailment, items: [] };
+            groups.push(byN[key]);
+        }
+        byN[key].items.push(ev);
+    });
+    return groups;
+}
+
+function renderEvidenceQuote(ev) {
+    const url = ev.span_url ? ` data-span-url="${escapeHtml(ev.span_url)}"` : '';
+    return `<div class="evidence-quote"${url}>`
+        + `<mark>${escapeHtml(ev.quote || '')}</mark>`
+        + `<span class="evidence-source">${escapeHtml(evidenceSourceLabel(ev))}</span>`
+        + `</div>`;
+}
+
+function renderEvidenceCompact(evidence, maxQuotes = 3) {
+    const shown = evidence.slice(0, maxQuotes);
+    const more = evidence.length - shown.length;
+    return `<div class="card-text card-evidence">`
+        + shown.map(renderEvidenceQuote).join('')
+        + (more > 0 ? `<div class="evidence-more">+${more} more quote${more > 1 ? 's' : ''} \u2014 click to review</div>` : '')
+        + `</div>`;
+}
+
+function renderEvidenceFull(evidence) {
+    return groupEvidenceByClaim(evidence).map(group => {
+        const partial = group.entailment === 'partial'
+            ? '<span class="evidence-partial">partially verified</span>' : '';
+        return `<div class="evidence-claim">`
+            + `<div class="evidence-claim-text"><span class="evidence-n">[${escapeHtml(String(group.n))}]</span> ${escapeHtml(group.claim || '')}${partial}</div>`
+            + group.items.map(renderEvidenceQuote).join('')
+            + `</div>`;
+    }).join('');
+}
+
+function notesConflictsToShow(citation) {
+    return (citation.conflicts || []).filter(c => c.severity !== 'info');
+}
+
+function renderNotesConflicts(conflicts, compact = false) {
+    if (!conflicts.length) return '';
+    const items = conflicts.map(c => {
+        const attr = (c.attribute || '').split('.').pop().replace(/_/g, ' ');
+        const values = (c.values || []).map(v => {
+            const url = v.span_url ? ` data-span-url="${escapeHtml(v.span_url)}"` : '';
+            return `<span class="notes-conflict-value"${url}>${escapeHtml(String(v.value ?? ''))}`
+                + ` <span class="evidence-source">${escapeHtml(v.note_label || '')}</span></span>`;
+        }).join('<span class="notes-conflict-vs">vs</span>');
+        const rationale = compact ? '' : `<div class="notes-conflict-rationale">${escapeHtml(c.rationale || '')}</div>`;
+        return `<div class="notes-conflict notes-conflict-${escapeHtml(c.severity || 'medium')}">`
+            + `<div class="notes-conflict-head">\u26A0 ${escapeHtml(attr)}</div>`
+            + `<div class="notes-conflict-values">${values}</div>${rationale}</div>`;
+    }).join('');
+    return `<div class="notes-conflicts"><div class="notes-conflicts-title">Documented discrepancies</div>${items}</div>`;
+}
+
+async function loadNoteSpan(url, container) {
+    container.innerHTML = '<div class="modal-loading">Loading\u2026</div>';
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        const { start, end } = data.highlight;
+        const text = data.text;
+        const meta = [data.label, data.note_date, data.note_type, data.derived === 'ocr' ? `OCR page ${(data.page_index ?? 0) + 1}` : null]
+            .filter(Boolean).map(escapeHtml).join(' \u00B7 ');
+        container.innerHTML = `<div class="note-viewer-meta">${meta}</div>`
+            + `<div class="note-viewer-text">${data.truncated_before ? '\u2026' : ''}`
+            + escapeHtml(text.slice(0, start))
+            + `<mark class="note-highlight">${escapeHtml(text.slice(start, end))}</mark>`
+            + escapeHtml(text.slice(end))
+            + `${data.truncated_after ? '\u2026' : ''}</div>`;
+        container.querySelector('.note-highlight')?.scrollIntoView({ block: 'center' });
+    } catch (err) {
+        container.innerHTML = `<div class="modal-text" style="color: var(--critical);">Could not load source span: ${escapeHtml(String(err.message || err))}</div>`;
+    }
+}
+
+function renderNotesModalBody(citation, focusSpanUrl = null) {
+    const conflicts = notesConflictsToShow(citation);
+    modalBody.innerHTML = `<div class="notes-modal">`
+        + `<div class="notes-evidence-pane">${renderNotesConflicts(conflicts)}${renderEvidenceFull(citation.evidence)}</div>`
+        + `<div class="note-viewer"></div>`
+        + `</div>`;
+    const viewer = modalBody.querySelector('.note-viewer');
+    const select = el => {
+        modalBody.querySelectorAll('[data-span-url].active').forEach(x => x.classList.remove('active'));
+        el.classList.add('active');
+        loadNoteSpan(el.dataset.spanUrl, viewer);
+    };
+    modalBody.querySelectorAll('[data-span-url]').forEach(el => {
+        el.addEventListener('click', () => select(el));
+    });
+    const spans = [...modalBody.querySelectorAll('[data-span-url]')];
+    const initial = (focusSpanUrl && spans.find(el => el.dataset.spanUrl === focusSpanUrl))
+        || modalBody.querySelector('.evidence-quote[data-span-url]');
+    if (initial) select(initial);
+}
+
 // Parse CSV text into an HTML table (first maxRows rows, first maxCols columns)
 function csvToHTML(csv, maxRows = 100, maxCols = 5) {
     const lines = csv.trim().split('\n').filter(l => l.trim());
@@ -1047,6 +1166,7 @@ let hideTimeout = null;
 
 async function showCitationPopup(anchor, citation) {
     clearTimeout(hideTimeout);
+    citationPopup._citation = citation;
 
     const type = getCitationType(citation.file);
     const agentLabel = citationLabel(agentCardLabels, citation.agent);
@@ -1060,6 +1180,8 @@ async function showCitationPopup(anchor, citation) {
         contentHTML = `<video class="card-video" src="${citation.web_path}" controls></video>`;
     } else if (type === 'audio') {
         contentHTML = `<div class="card-audio-wrap"><audio class="card-audio" src="${citation.web_path}" controls></audio></div>`;
+    } else if (hasNotesEvidence(citation)) {
+        contentHTML = renderEvidenceCompact(citation.evidence);
     } else {
         contentHTML = `<div class="card-loading">Loading…</div>`;
     }
@@ -1095,6 +1217,7 @@ async function showCitationPopup(anchor, citation) {
         </div>
         <div class="card-content" id="card-content-inner">${contentHTML}</div>
         <div class="card-summary">${summaryHTML}</div>
+        ${renderNotesConflicts(notesConflictsToShow(citation), true)}
         ${conflictHTML}
     `;
 
@@ -1102,7 +1225,7 @@ async function showCitationPopup(anchor, citation) {
     positionPopup(anchor);
 
     // Fetch and render text-based content
-    if (type === 'csv' || type === 'text') {
+    if ((type === 'csv' || type === 'text') && !hasNotesEvidence(citation)) {
         try {
             const text = await fetch(citation.web_path + '?t=' + Date.now()).then(r => r.text());
             const inner = document.getElementById('card-content-inner');
@@ -1522,7 +1645,17 @@ citationPopup.addEventListener('mouseleave', () => { citationPopup.style.display
 // Pin button on hover card
 citationPopup.addEventListener('click', async (e) => {
     const pinBtn = e.target.closest('.btn-pin-card');
-    if (!pinBtn || !activePatientId) return;
+    if (!pinBtn) {
+        const citation = citationPopup._citation;
+        if (citation && hasNotesEvidence(citation)) {
+            const span = e.target.closest('[data-span-url]');
+            citationPopup.style.display = 'none';
+            clearTimeout(hideTimeout);
+            openCitationModal(citation, null, span ? span.dataset.spanUrl : null);
+        }
+        return;
+    }
+    if (!activePatientId) return;
     e.stopPropagation();
     const citation = JSON.parse(decodeURIComponent(pinBtn.dataset.citation));
     const existingPinId = findPinId(activePatientId, citation);
@@ -1562,7 +1695,7 @@ function csvToModalHTML(csv, maxRows = 200) {
     return html;
 }
 
-async function openCitationModal(citation, pin = null) {
+async function openCitationModal(citation, pin = null, focusSpanUrl = null) {
     modalCitation = citation;
 
     // Look up pin if not provided
@@ -1722,7 +1855,9 @@ async function openCitationModal(citation, pin = null) {
     citationModal.classList.add('open');
 
     // Fetch text-based content
-    if (type === 'csv' || type === 'text') {
+    if (hasNotesEvidence(citation)) {
+        renderNotesModalBody(citation, focusSpanUrl);
+    } else if (type === 'csv' || type === 'text') {
         try {
             const text = await fetch(citation.web_path + '?t=' + Date.now()).then(r => r.text());
             modalBody.innerHTML = type === 'csv'
