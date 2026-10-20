@@ -1,12 +1,14 @@
 # MedDataOS
 
-A local page for asking questions about one patient's files. Point it at a folder and an agent, and the answer shows up in the chat.
+A local page for asking questions about the files in one folder. The server opens that folder with [med-datactrl](https://github.com/pmcdi/med-datactrl), serves the files, and sends each question to an OpenAI-compatible chat completions endpoint. That endpoint is the agent: the example in `examples/agent.py`, or any other program that speaks the same API.
 
-The server uses [med-datactrl](../med-datactrl) to list and read the files in that folder. The agent is a separate program: a model such as OpenAI or Ollama, or an agent you built and served behind the OpenAI chat completions API.
+One process opens one folder. Chat sessions, pins, and review checkboxes last until the process stops. Restart the server to open a different folder.
 
 ## Start
 
-Copy `.env.example` to `.env`. Set `OPENAI_MODEL`, and `OPENAI_BASE_URL` plus `OPENAI_API_KEY` when the model is not OpenAI.
+Copy `.env.example` to `.env`.
+
+To use the example agent, set `OPENAI_MODEL`. Set `OPENAI_API_KEY` when the model requires one. `OPENAI_BASE_URL` is the model's base URL, the part before `/chat/completions`. The example agent calls `https://api.openai.com/v1` only when `OPENAI_BASE_URL` is unset. A blank value does not use that default, so set the URL or remove the line.
 
 In one terminal:
 
@@ -14,13 +16,21 @@ In one terminal:
 pixi run agent
 ```
 
-In another, pass the address the agent prints:
+That serves `examples/agent.py` at `http://127.0.0.1:8001/v1` and prints the address to pass below. It forwards each request to `OPENAI_MODEL` and returns the model's message, including any tool calls.
+
+In another terminal, pass the folder and that address:
 
 ```bash
 pixi run serve /path/to/folder --agent-url http://127.0.0.1:8001/v1
 ```
 
-Open the URL the server prints. The page selects the case named in `?patient=`.
+The server refuses to start without `--agent-url`. Open the URL it prints. The query `?patient=` is the folder name, which is the only patient on the page.
+
+To skip the example agent, point `--agent-url` at another chat completions endpoint, such as `http://127.0.0.1:11434/v1` for Ollama. The server sends `AGENT_MODEL` as `model`, `AGENT_API_KEY` as a bearer token when it is set, and waits `AGENT_TIMEOUT` seconds (default `120`). The example agent ignores `AGENT_MODEL` and uses `OPENAI_MODEL` instead.
+
+`HOST` and `PORT` bind the page. The defaults are `127.0.0.1` and `8080`.
+
+`pixi run test` starts the server on a small folder and talks to it as the page, as an agent, and as a model behind the example agent.
 
 ## What a question goes through
 
@@ -33,25 +43,27 @@ sequenceDiagram
     participant Folder as Case folder
 
     User->>Page: Ask a question
-    Page->>Server: Send the question
+    Page->>Server: POST /api/chat
     Server->>Agent: Chat so far, file list, citation rule, tools
-    loop Until the agent answers
-        Agent-->>Server: Read this file
-        Server->>Folder: Open it
-        Server->>Agent: Contents
+    loop Until the agent stops calling tools, at most 8 rounds
+        Agent-->>Server: Tool call
+        Server->>Folder: Run it with med-datactrl
+        Server->>Agent: Tool result
     end
     Agent-->>Server: Answer
-    Server->>Server: Check the citations against the files opened
+    Server->>Server: Check citations against describe and fetch calls
     alt Citations missing or wrong
-        Server->>Agent: Ask for a corrected answer
+        Server->>Agent: Refusal and the reason, up to 3 times
         Agent-->>Server: Corrected answer
     end
-    Server->>Page: Show the answer
+    Server->>Page: WebSocket message
     Page-->>User: Answer in the chat
 ```
 
-If the agent opens no files, it answers in plain text. If it still can't cite correctly after three tries, or the agent can't be reached, the page shows that instead of waiting.
+At startup the server also asks the agent to fill the patient card from the files. Until that reply arrives, and if it never does, the sidebar shows the folder name.
 
-The server only talks to the agent at `--agent-url`. [Connect an agent](docs/agents.md) describes that call. `pixi run agent` serves `examples/agent.py` there and forwards each question to `OPENAI_MODEL`. Point `--agent-url` straight at another endpoint instead, such as `http://127.0.0.1:11434/v1` for Ollama.
+A successful `describe` or `fetch` of a file in the case list counts as opening it. The answer then has to be the citation JSON in [Connect an agent](docs/agents.md). With no file opened, plain text is accepted, and a JSON object is sent back with a request for plain text.
 
-`pixi run test` starts the server on a small folder and talks to it as the page, as an agent, and as a fake model.
+If the citations are still wrong after the original answer and three corrections, the page shows `The agent could not produce an answer with valid citations` and the last problem. If the agent cannot be reached, times out, or returns something other than a chat completion, the page shows `The agent failed` and the reason.
+
+The page renders a citation JSON answer as text with a marker for each `[cite:id]`. Hovering or opening a marker loads that file from the folder. [The page](web/README.md) covers the sidebar, pins, and attachments.
