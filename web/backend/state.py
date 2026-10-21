@@ -92,6 +92,8 @@ class AppState:
         self.pins: dict[str, list] = {}
         self.reviews: dict[str, dict] = {}
         self.agent_url: str | None = None
+        self.specialists: dict = {}
+        self.consulted: dict[str, dict[str, dict]] = {}
         self.pending: set[str] = set()
         self.reads: dict[str, list[dict]] = {}
         self.hub = Hub()

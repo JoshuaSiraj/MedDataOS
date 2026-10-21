@@ -1,6 +1,6 @@
 # MedDataOS page
 
-The server in `web/backend` opens one case folder and serves this page. Start it from the project root as the [README](../README.md) describes. The page is the URL printed at startup, with `?patient=` set to the folder name.
+The server in `web/backend` opens one case folder and serves this page. Start it from the project root as the [README](../README.md) describes. The page is the URL printed at startup, with `?patient=` set to the folder name. Optional specialists are registered with `--agents` or `--specialist`; see [Connect an agent](../docs/agents.md).
 
 `HOST` and `PORT` in `.env` bind the server. The defaults are `127.0.0.1` and `8080`. When `HOST` is `0.0.0.0` or `::`, the printed URL still uses `127.0.0.1`.
 

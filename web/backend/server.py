@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 import dispatch
 import routes
 from case import case
+from registry import load_specialists
 from state import APP_ROOT, state
 
 
@@ -60,6 +61,14 @@ def log_launch(root: Path, shown: str, port: int) -> None:
         print(f"  {'unknown':<12} {path}  {reason}", flush=True)
 
     print(f"Agent: {state.agent_url} model={os.getenv('AGENT_MODEL') or '?'}", flush=True)
+
+    if state.specialists:
+        print(
+            "Specialists: "
+            + ", ".join(f"{name} ({spec.url})" for name, spec in state.specialists.items()),
+            flush=True,
+        )
+
     print(f"Tools: {', '.join(case.tool_names)}", flush=True)
     print(f"Web UI: http://{shown}:{port}/?patient={quote(root.name)}", flush=True)
 
@@ -70,11 +79,22 @@ def main() -> None:
     parser.add_argument(
         "--agent-url",
         required=True,
-        help="OpenAI-compatible base URL, the part before /chat/completions",
+        help="OpenAI-compatible base URL of the router, the part before /chat/completions",
+    )
+    parser.add_argument(
+        "--agents",
+        help="TOML file of specialists. Each table needs a url and a description.",
+    )
+    parser.add_argument(
+        "--specialist",
+        action="append",
+        metavar="NAME=URL",
+        help="Register one specialist endpoint. Repeat for each.",
     )
     args = parser.parse_args()
 
     state.agent_url = args.agent_url.rstrip("/")
+    state.specialists = load_specialists(args.agents, args.specialist)
     root = state.open(args.folder)
     app.mount("/case", StaticFiles(directory=str(root)), name="case")
 

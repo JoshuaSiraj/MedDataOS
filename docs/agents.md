@@ -59,6 +59,55 @@ The object may contain:
 
 A markdown fence around that JSON is removed. Any other shape, invalid JSON, or a failed request leaves the card as the folder name. The sidebar already shows that name, and the server pushes the filled card to open pages when the reply is usable. Notes, Tables, and DICOM on the card come from the discovery report. `data_dates` is shown beside a citation when the cited path is `/case/<folder>/…` and `<folder>` is a key in `data_dates`.
 
+## More than one agent
+
+`--agent-url` stays the router: the only agent that talks to the page. Specialists are other chat endpoints the router can call. Register them in a TOML file:
+
+```toml
+[notes]
+url = "http://127.0.0.1:8002/v1"
+description = "Answers from clinical notes with verified quotes, dates, and conflicts."
+
+[imaging]
+url = "http://127.0.0.1:8003/v1"
+description = "Interprets DICOM series the case actually contains."
+```
+
+```bash
+pixi run serve /path/to/folder --agent-url http://127.0.0.1:8001/v1 --agents agents.toml
+```
+
+`--specialist notes=http://127.0.0.1:8002/v1` does the same for one agent, and can be repeated. A name is a short lowercase word. The same name cannot be listed twice.
+
+The router is given one extra tool per specialist, `consult_notes`, `consult_imaging`, and so on. The description is the only routing hint. The server runs that call: it posts the question and the datactrl tools to the specialist, and does not give the specialist a `consult_` tool, so agents cannot call each other. Each specialist is called at most once per question; a second call returns the first result. A timeout, an HTTP error, or citations that still fail after three corrections become a tool error. The router can still answer from the specialists that succeeded.
+
+A specialist may answer in plain text, or with the citation JSON below. Each `web_path` must be a file in the open case. Files it cites count as opened, so the router's own reply has to cite them too. With no specialists registered, none of this is added and the server talks only to `--agent-url`.
+
+## Clinical notes specialist
+
+The notes specialist is `python -m src.agents.notes.serve --case /path/to/case` in the med-datactrl repo. It prints an address such as `http://127.0.0.1:8002/v1`. For notes alone, pass that address as `--agent-url`. When more than one specialist is running, keep a router as `--agent-url` and register the notes process beside it:
+
+```toml
+[notes]
+url = "http://127.0.0.1:8002/v1"
+description = "Answers from clinical notes with verified quotes, dates, and conflicts. Use this for questions about the chart, history, labs in notes, and discrepancies between notes."
+```
+
+It opens that case itself and returns citation JSON. Each citation is tagged `clinical_notes` and carries the verified quotes and documented discrepancies, which the page shows on the badge, the hover card, and the source viewer. It does not ask the server to read files.
+
+## Azure OpenAI
+
+The example router speaks Azure when these are set in this repo's `.env`. The notes agent reads the same variables from its own environment:
+
+```bash
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_ENDPOINT=https://YOUR_RESOURCE.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=your-deployment-name
+AZURE_OPENAI_API_VERSION=2024-10-21
+```
+
+`AZURE_OPENAI_DEPLOYMENT` is the deployment name. `AZURE_OPENAI_API_VERSION` is the date Azure puts on the request. When the key, endpoint, and deployment are set, those calls do not use Gemini. When they are empty, the notes agent keeps using `GEMINI_API_KEY`.
+
 ## Citations
 
 `describe` and `fetch` record the resource they were called with, when that id is in the case file list. Those are the opened files. Other tools do not open a file. A failed call does not either.
@@ -107,4 +156,4 @@ Anything other than a chat completion (`choices[0].message` as an object), a con
 
 It replaces `model` with `OPENAI_MODEL` and posts `messages`, plus `tools` when the request includes them, to `OPENAI_BASE_URL`. When `OPENAI_BASE_URL` is unset it uses `https://api.openai.com/v1`. `OPENAI_API_KEY` is sent as a bearer token when set. The example agent's own wait is 120 seconds. `AGENT_MODEL`, `AGENT_API_KEY`, and `AGENT_TIMEOUT` apply to the MedDataOS server's call, which this forwarder does not read.
 
-`OPENAI_MODEL` must be set or the example agent exits. Point `--agent-url` at another endpoint when you do not want this forwarder.
+Set `OPENAI_MODEL`, or `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_DEPLOYMENT`. Otherwise the example agent exits. Point `--agent-url` at another endpoint when you do not want this forwarder.
