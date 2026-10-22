@@ -50,7 +50,7 @@ sequenceDiagram
     Page-->>User: Answer in the chat
 ```
 
-If the agent opens no files, it answers in plain text. If it still can't cite correctly after three tries, or the agent can't be reached, the page shows that instead of waiting.
+If the agent opens no files, it answers in plain text. If it still can't cite correctly after six corrections, or the agent can't be reached, the page shows that instead of waiting.
 
 The page talks only to the agent at `--agent-url`. That agent is the router. Optional specialists, each an OpenAI-compatible endpoint, are registered with `--agents` or repeated `--specialist name=url` flags. The router calls them through `consult_<name>` tools; the server runs those calls, keeps specialists from calling each other, and still checks citations before the page shows the answer. [Connect an agent](docs/agents.md) describes both the single-agent call and the specialist registry.
 

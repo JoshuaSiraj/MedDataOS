@@ -49,6 +49,76 @@ const modalProvenance = document.getElementById('modal-provenance');
 const modalProvenancePanel = document.getElementById('modal-provenance-panel');
 
 // ─── Sidebar: Load Patients ─────────────────────────────────
+function dicomRecord(citation) {
+    const record = citation && citation.dicom;
+    return record && typeof record === 'object' ? record : null;
+}
+
+function dicomPreviews(citation) {
+    const record = dicomRecord(citation);
+    return record && Array.isArray(record.previews) ? record.previews : [];
+}
+
+function dicomPreviewSrc(citation, preview) {
+    const params = new URLSearchParams();
+    params.set('web_path', (preview && preview.web_path) || citation.web_path);
+    if (preview) {
+        if (preview.slice_index != null) params.set('slice_index', String(preview.slice_index));
+        if (preview.window) params.set('window', preview.window);
+        if (preview.overlay) params.set('overlay', 'true');
+        if (preview.roi) params.set('roi', preview.roi);
+    }
+    return '/api/dicom/preview?' + params.toString();
+}
+
+function dicomCaption(preview) {
+    if (!preview) return '';
+    const parts = [];
+    if (preview.slice_index != null) {
+        const count = preview.n_slices != null ? ` of ${preview.n_slices}` : '';
+        parts.push(`slice ${preview.slice_index}${count}`);
+    }
+    if (preview.window) parts.push(preview.window);
+    if (preview.roi) parts.push(preview.roi);
+    else if (preview.overlay) parts.push('overlay');
+    return parts.join(' · ');
+}
+
+function dicomValue(value) {
+    if (Array.isArray(value)) return value.map(item => dicomValue(item)).join(', ');
+    if (value && typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+}
+
+const DICOM_META_LABELS = {
+    Modality: 'Modality',
+    SeriesDescription: 'Series',
+    BodyPartExamined: 'Body part',
+    StudyDescription: 'Study',
+    ProtocolName: 'Protocol',
+    series_kind: 'Kind',
+    instance_count: 'Images',
+    ImageType: 'Image type',
+    roi_names: 'Structures',
+    structure_set_label: 'Structure set',
+    NumROIs: 'ROIs',
+    RTPlanLabel: 'Plan',
+    DoseType: 'Dose type',
+    DoseUnits: 'Dose units',
+};
+
+function renderDicomMeta(citation, limit) {
+    const metadata = dicomRecord(citation)?.metadata;
+    if (!metadata) return '';
+    const rows = Object.keys(metadata)
+        .filter(key => metadata[key] != null && metadata[key] !== '')
+        .slice(0, limit || undefined);
+    if (!rows.length) return '';
+    return `<dl class="dicom-meta">${rows.map(key =>
+        `<div><dt>${escapeHtml(DICOM_META_LABELS[key] || key)}</dt><dd>${escapeHtml(dicomValue(metadata[key]))}</dd></div>`
+    ).join('')}</dl>`;
+}
+
 async function loadPatients() {
     try {
         const res = await fetch('/api/patients');
@@ -328,6 +398,15 @@ function updateCitationBadgeStates() {
 }
 
 function buildPinPreview(citation) {
+    const record = dicomRecord(citation);
+    if (record) {
+        const preview = dicomPreviews(citation).at(-1);
+        if (preview) {
+            return `<div class="pinned-card-preview"><img class="dicom-preview" src="${dicomPreviewSrc(citation, preview)}" alt=""></div>`;
+        }
+        const label = record.metadata?.Modality || 'DICOM';
+        return `<div class="pinned-card-preview"><span class="pinned-card-preview-label">${escapeHtml(String(label))}</span></div>`;
+    }
     const type = getCitationType(citation.file);
     if (type === 'image') {
         const isSvg = citation.file.endsWith('.svg');
@@ -994,11 +1073,21 @@ function buildCitationForAgent(agent) {
     return { id: '0', agent, file, web_path, summary: '' };
 }
 
-// Derive modality type from file extension
+// A real suffix such as .txt. A DICOM folder like "Neck 2.0 CE" has dots but no suffix.
+function citationSuffix(file) {
+    const name = String(file || '').split('/').pop();
+    const dot = name.lastIndexOf('.');
+    if (dot <= 0 || dot < name.length - 6) return '';
+    return name.slice(dot + 1).toLowerCase();
+}
+
+// Derive modality type from file extension. Unknown paths are not text files.
 function getCitationType(file) {
-    const ext = file.split('.').pop().toLowerCase();
-    return { png: 'image', jpg: 'image', jpeg: 'image', svg: 'image',
-             csv: 'csv', txt: 'text', mp4: 'video', wav: 'audio' }[ext] || 'text';
+    return {
+        png: 'image', jpg: 'image', jpeg: 'image', svg: 'image',
+        csv: 'csv', txt: 'text', md: 'text', json: 'text',
+        mp4: 'video', wav: 'audio',
+    }[citationSuffix(file)] || '';
 }
 
 // Convert plain text to reflowed HTML paragraphs (collapse hard line-wraps)
@@ -1168,12 +1257,15 @@ async function showCitationPopup(anchor, citation) {
     clearTimeout(hideTimeout);
     citationPopup._citation = citation;
 
-    const type = getCitationType(citation.file);
+    const type = dicomRecord(citation) ? 'dicom' : getCitationType(citation.file);
     const agentLabel = citationLabel(agentCardLabels, citation.agent);
+    const dicomPreview = type === 'dicom' ? dicomPreviews(citation).at(-1) : null;
 
     // Build initial content (immediate for media, loading state for text/csv)
     let contentHTML = '';
-    if (type === 'image') {
+    if (type === 'dicom' && dicomPreview) {
+        contentHTML = `<img class="card-image dicom-preview" src="${dicomPreviewSrc(citation, dicomPreview)}" alt="${escapeHtml(agentLabel)}">`;
+    } else if (type === 'image') {
         const isSvg = citation.file.endsWith('.svg');
         contentHTML = `<img class="card-image${isSvg ? ' card-image-svg' : ''}" src="${citation.web_path}" alt="${escapeHtml(agentLabel)}">`;
     } else if (type === 'video') {
@@ -1182,7 +1274,7 @@ async function showCitationPopup(anchor, citation) {
         contentHTML = `<div class="card-audio-wrap"><audio class="card-audio" src="${citation.web_path}" controls></audio></div>`;
     } else if (hasNotesEvidence(citation)) {
         contentHTML = renderEvidenceCompact(citation.evidence);
-    } else {
+    } else if (type === 'text' || type === 'csv') {
         contentHTML = `<div class="card-loading">Loading…</div>`;
     }
 
@@ -1210,12 +1302,17 @@ async function showCitationPopup(anchor, citation) {
         ? `<div class="card-conflict">\u26A0 Contradicted by ${escapeHtml(conflict.firstAgent)}${conflict.count > 1 ? ` +${conflict.count - 1}` : ''}</div>`
         : '';
 
+    const dicomHTML = type === 'dicom'
+        ? `${dicomPreview ? `<div class="dicom-caption">${escapeHtml(dicomCaption(dicomPreview))}</div>` : ''}${renderDicomMeta(citation, 4)}`
+        : '';
+
     citationPopup.innerHTML = `
         <div class="card-header">
             <span class="card-agent">${escapeHtml(agentLabel)}</span>
             ${pinBtnHTML}
         </div>
-        <div class="card-content" id="card-content-inner">${contentHTML}</div>
+        ${contentHTML ? `<div class="card-content" id="card-content-inner">${contentHTML}</div>` : '<div id="card-content-inner"></div>'}
+        ${dicomHTML}
         <div class="card-summary">${summaryHTML}</div>
         ${renderNotesConflicts(notesConflictsToShow(citation), true)}
         ${conflictHTML}
@@ -1227,10 +1324,13 @@ async function showCitationPopup(anchor, citation) {
     // Fetch and render text-based content
     if ((type === 'csv' || type === 'text') && !hasNotesEvidence(citation)) {
         try {
-            const text = await fetch(citation.web_path + '?t=' + Date.now()).then(r => r.text());
+            const response = await fetch(citation.web_path + '?t=' + Date.now());
+            const text = await response.text();
             const inner = document.getElementById('card-content-inner');
             if (inner) {
-                inner.innerHTML = type === 'csv'
+                inner.innerHTML = !response.ok
+                    ? `<div class="card-text card-error">Could not load this file.</div>`
+                    : type === 'csv'
                     ? csvToHTML(text)
                     : `<div class="card-text">${plainTextToHTML(text.slice(0, 600))}${text.length > 600 ? '<p>…</p>' : ''}</div>`;
                 positionPopup(anchor);
@@ -1708,7 +1808,7 @@ async function openCitationModal(citation, pin = null, focusSpanUrl = null) {
     }
     currentModalPin = pin;
 
-    const type = getCitationType(citation.file);
+    const type = dicomRecord(citation) ? 'dicom' : getCitationType(citation.file);
     const agentLabel = citationLabel(agentCardLabels, citation.agent);
 
     modalAgent.textContent = agentLabel;
@@ -1795,14 +1895,20 @@ async function openCitationModal(citation, pin = null, focusSpanUrl = null) {
 
     // ── Build body content ───────────────────────────────────
     let contentHTML = '';
-    if (type === 'image') {
+    if (type === 'dicom') {
+        const figures = dicomPreviews(citation).map((preview, index, all) => {
+            const main = index === all.length - 1 ? ' dicom-preview-main' : '';
+            return `<figure class="dicom-figure${main}"><img class="dicom-preview" src="${dicomPreviewSrc(citation, preview)}" alt="${escapeHtml(agentLabel)}"><figcaption>${escapeHtml(dicomCaption(preview))}</figcaption></figure>`;
+        }).join('');
+        contentHTML = figures + renderDicomMeta(citation);
+    } else if (type === 'image') {
         const isSvg = citation.file.endsWith('.svg');
         contentHTML = `<img src="${citation.web_path}" alt="${escapeHtml(agentLabel)}"${isSvg ? ' class="modal-image-svg"' : ''}>`;
     } else if (type === 'video') {
         contentHTML = `<video src="${citation.web_path}" controls autoplay></video>`;
     } else if (type === 'audio') {
         contentHTML = `<div class="modal-audio-wrap"><div class="audio-label">Heart sound recording</div><audio src="${citation.web_path}" controls></audio></div>`;
-    } else {
+    } else if (type === 'text' || type === 'csv') {
         contentHTML = '<div class="modal-loading">Loading\u2026</div>';
     }
     modalBody.innerHTML = contentHTML;
@@ -1859,8 +1965,11 @@ async function openCitationModal(citation, pin = null, focusSpanUrl = null) {
         renderNotesModalBody(citation, focusSpanUrl);
     } else if (type === 'csv' || type === 'text') {
         try {
-            const text = await fetch(citation.web_path + '?t=' + Date.now()).then(r => r.text());
-            modalBody.innerHTML = type === 'csv'
+            const response = await fetch(citation.web_path + '?t=' + Date.now());
+            const text = await response.text();
+            modalBody.innerHTML = !response.ok
+                ? '<div class="modal-text" style="color: var(--critical);">Could not load this file.</div>'
+                : type === 'csv'
                 ? csvToModalHTML(text)
                 : `<div class="modal-text">${plainTextToHTML(text)}</div>`;
         } catch {

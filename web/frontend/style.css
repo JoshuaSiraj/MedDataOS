@@ -606,6 +606,58 @@ header::after {
     display: block;
 }
 
+.pinned-card-preview img.dicom-preview,
+.card-image.dicom-preview,
+.modal-body img.dicom-preview {
+    object-fit: contain;
+    background: #111;
+}
+
+.dicom-caption,
+.dicom-figure figcaption {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+    padding: 6px 12px 0;
+}
+
+.dicom-figure {
+    margin: 0;
+    width: 100%;
+}
+
+.dicom-figure + .dicom-figure {
+    margin-top: 8px;
+}
+
+.dicom-meta {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding: 8px 12px;
+}
+
+.dicom-meta div {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 8px;
+}
+
+.dicom-meta dt {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.dicom-meta dd {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
 .pinned-card-preview-icon {
     font-size: 28px;
     opacity: 0.2;

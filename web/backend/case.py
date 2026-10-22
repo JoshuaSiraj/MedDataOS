@@ -8,7 +8,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import ClassVar
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 from datactrl.tools import TOOL_DEFINITIONS, dispatch
 
@@ -18,6 +18,31 @@ from state import log, state
 def web_path(relative: str) -> str:
     parts = [quote(part) for part in Path(relative).parts if part not in ("", ".")]
     return "/case/" + "/".join(parts)
+
+
+def path_key(path: object) -> str:
+    """Identity of a case path. Spaces and %20, and a missing /case prefix, are the same file."""
+    text = str(path or "").strip()
+
+    for _ in range(3):
+        decoded = unquote(text)
+
+        if decoded == text:
+            break
+
+        text = decoded
+
+    if "://" in text:
+        text = urlparse(text).path or text
+
+    text = text.split("?", 1)[0].replace("\\", "/").rstrip("/")
+
+    if text.startswith("/case/"):
+        text = text[len("/case/"):]
+    elif text.startswith("case/"):
+        text = text[len("case/"):]
+
+    return text
 
 
 @dataclass
@@ -116,6 +141,72 @@ class Case:
 
     def files(self) -> list[dict]:
         """Files the agent may cite. Reads the inventory lists discover actually returns."""
+        return [
+            {
+                "id": ref.get("id"),
+                "modality": ref.get("modality"),
+                "label": ref.get("label"),
+                "web_path": web_path(ref.get("path", "")),
+            }
+            for ref in self._rows()
+        ]
+
+    def dicom_preview_paths(self) -> list[str]:
+        """Case paths whose citation should show a DICOM preview image."""
+        return [path for path, _resource_id in self._dicom_previews()]
+
+    def dicom_preview_id(self, cited_path: str) -> str | None:
+        """Resource id for a cited path that can render a preview, or None."""
+        for path, resource_id in self._dicom_previews():
+            if path == cited_path:
+                return resource_id
+        return None
+
+    def _dicom_previews(self) -> list[tuple[str, str]]:
+        from datactrl.utils.dicom_views import preview_supported
+
+        found = []
+
+        for ref in self._rows():
+            if ref.get("modality") != "dicom" or not isinstance(ref.get("id"), str):
+                continue
+
+            raw_meta = ref.get("meta")
+            meta = raw_meta if isinstance(raw_meta, dict) else {}
+            check = {
+                "series_kind": ref.get("series_kind") or meta.get("series_kind"),
+                "Modality": ref.get("dicom_modality") or meta.get("Modality"),
+            }
+
+            if not preview_supported(check):
+                continue
+
+            found.append((web_path(ref.get("path", "")), ref["id"]))
+
+        return found
+
+    def _file_by_id(self, resource_id: object) -> dict | None:
+        if not isinstance(resource_id, str) or not resource_id:
+            return None
+
+        files = self.files()
+        exact = next((item for item in files if item.get("id") == resource_id), None)
+
+        if exact is not None:
+            return exact
+
+        return next(
+            (
+                item for item in files
+                if isinstance(item.get("id"), str)
+                and len(resource_id) >= 8
+                and len(item["id"]) >= 8
+                and (item["id"].endswith(resource_id) or resource_id.endswith(item["id"]))
+            ),
+            None,
+        )
+
+    def _rows(self) -> list[dict]:
         if state.report is None:
             return []
 
@@ -130,16 +221,7 @@ class Case:
                 if isinstance(found, list):
                     rows.extend(found)
 
-        return [
-            {
-                "id": ref.get("id"),
-                "modality": ref.get("modality"),
-                "label": ref.get("label"),
-                "web_path": web_path(ref.get("path", "")),
-            }
-            for ref in rows
-            if isinstance(ref, dict)
-        ]
+        return [ref for ref in rows if isinstance(ref, dict)]
 
     def patient(self) -> Patient | None:
         """The card. Demographics come from the agent once it has read the files."""
@@ -167,8 +249,13 @@ class Case:
 
     def run(self, name: str, arguments: dict, session_id: str) -> dict:
         """Run one tool for a question and remember any file it opened."""
-        args = {key: value for key, value in arguments.items() if key not in self._SERVER_ARGS}
-        detail = " ".join(f"{key}={value}" for key, value in args.items() if value is not None)
+        agent_args = {
+            key: value for key, value in arguments.items() if key not in self._SERVER_ARGS
+        }
+        detail = " ".join(
+            f"{key}={value}" for key, value in agent_args.items() if value is not None
+        )
+        args = dict(agent_args)
 
         if name in self._takes_root:
             args["root"] = str(state.root)
@@ -180,21 +267,174 @@ class Case:
             log("agent", f"tool {name} {detail} error: {message}")
             return {"status": "error", "name": name, "message": message}
 
+        payload = {"status": "ok", "name": name, "result": result}
+
         if name in self._READS:
-            self._remember(session_id, args.get("resource_id"))
+            token = self._remember(session_id, name, agent_args, result)
+
+            if token:
+                payload["cite"] = token
 
         log("agent", f"tool {name} {detail} ok")
-        return {"status": "ok", "name": name, "result": result}
+        return payload
 
-    def _remember(self, session_id: str, resource_id: str | None) -> None:
+    def expand_citations(self, text: str, calls: dict[str, dict]) -> str:
+        """Fill file, web_path, command, and DICOM from the cite token on each citation."""
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+        citations = parsed.get("citations") if isinstance(parsed, dict) else None
+
+        if not isinstance(citations, list) or not calls:
+            return text
+
+        changed = False
+
+        for citation in citations:
+            if not isinstance(citation, dict):
+                continue
+
+            handle = citation.get("cite")
+            call = calls.get(handle) if isinstance(handle, str) else None
+
+            if not isinstance(call, dict):
+                continue
+
+            citation["id"] = handle
+            citation["file"] = call["file"]
+            citation["web_path"] = call["web_path"]
+            citation["command"] = {"tool": call["tool"], "arguments": call["arguments"]}
+
+            if call.get("dicom"):
+                citation["dicom"] = call["dicom"]
+
+            changed = True
+
+        if not changed:
+            return text
+
+        return json.dumps(parsed)
+
+    def _remember(self, session_id: str, tool: str, agent_args: dict, result: dict) -> str | None:
+        """Record this read and return its cite token, or None when it opened no file."""
         if session_id not in state.pending:
-            return
+            return None
 
-        ref = next((item for item in self.files() if item["id"] == resource_id), None)
+        ref = self._file_by_id(agent_args.get("resource_id"))
+
+        if ref is None and isinstance(result, dict):
+            ref = self._file_by_id(result.get("id"))
+
+        if ref is None:
+            return None
+
         opened = state.reads.setdefault(session_id, [])
 
-        if ref and all(item["web_path"] != ref["web_path"] for item in opened):
+        if not any(item["web_path"] == ref["web_path"] for item in opened):
             opened.append(ref)
+
+        calls = state.calls.setdefault(session_id, {})
+        token = f"c{len(calls) + 1}"
+        record = {
+            "tool": tool,
+            "arguments": {
+                key: value for key, value in agent_args.items() if value is not None
+            },
+            "file": path_key(ref.get("web_path")).rsplit("/", 1)[-1],
+            "web_path": ref["web_path"],
+        }
+        dicom = self._call_dicom(ref, tool, agent_args, result)
+
+        if dicom:
+            record["dicom"] = dicom
+
+        calls[token] = record
+        return token
+
+    def _call_dicom(self, ref: dict, tool: str, args: dict, result: dict) -> dict:
+        """Metadata or the one preview slice this call returned."""
+        if ref.get("modality") != "dicom":
+            return {}
+
+        if tool == "describe":
+            metadata = self._dicom_metadata(result.get("summary"))
+            return {"metadata": metadata} if metadata else {}
+
+        view = result.get("view")
+
+        if view not in ("metadata", "preview"):
+            view = args.get("view")
+
+        if view == "metadata":
+            data = result.get("data")
+            raw = data.get("metadata") if isinstance(data, dict) else None
+            metadata = self._dicom_metadata(raw)
+            return {"metadata": metadata} if metadata else {}
+
+        if view == "preview":
+            preview = self._dicom_preview(args, result, ref.get("web_path", ""))
+            return {"previews": [preview]} if preview else {}
+
+        return {}
+
+    @staticmethod
+    def _dicom_metadata(raw: object) -> dict:
+        """The metadata object the tool returned, without empty fields."""
+        if not isinstance(raw, dict):
+            return {}
+
+        return {
+            key: value
+            for key, value in raw.items()
+            if value is not None and value != "" and value != []
+        }
+
+    @staticmethod
+    def _dicom_preview(args: dict, result: dict, cited_path: str) -> dict:
+        raw_data = result.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        raw_bounds = result.get("bounds")
+        bounds = raw_bounds if isinstance(raw_bounds, dict) else {}
+        raw_meta = data.get("meta")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
+        preview: dict[str, object] = {}
+
+        if cited_path:
+            preview["web_path"] = cited_path
+
+        slice_index = bounds.get("slice_index", args.get("slice_index"))
+
+        if isinstance(slice_index, bool):
+            slice_index = None
+        elif isinstance(slice_index, float) and slice_index.is_integer():
+            slice_index = int(slice_index)
+        elif isinstance(slice_index, str) and slice_index.strip().isdigit():
+            slice_index = int(slice_index.strip())
+
+        if isinstance(slice_index, int):
+            preview["slice_index"] = slice_index
+
+        n_slices = bounds.get("n_slices")
+
+        if isinstance(n_slices, int):
+            preview["n_slices"] = n_slices
+
+        window = bounds.get("window") or meta.get("window")
+
+        if isinstance(window, str) and window:
+            preview["window"] = window
+
+        if meta.get("overlay") is True or args.get("overlay") in (True, "true", "True", 1):
+            preview["overlay"] = True
+
+        roi = args.get("roi")
+
+        if isinstance(roi, str) and roi.strip():
+            preview["roi"] = roi.strip()
+
+        return preview
 
     @staticmethod
     def _exposed(tool: dict) -> dict:
@@ -217,49 +457,49 @@ class Answer:
     RULE = (
         "After describe or fetch, the reply is one JSON object with a \"response\" string "
         "and a \"citations\" list, like the example. "
-        "Put each [cite:id] right after the words that file supports. "
-        "A sentence may cite several files, but never put markers side by side "
-        "or group them at the end of the answer. "
-        "Each citation's web_path must be one of the files opened for this question."
+        "Put [cite:token] right after the words that call supports. "
+        "Several tokens may follow one claim. A marker may not be the whole sentence. "
+        "Each citation's cite is that same token from the tool result. "
+        "Do not send id, file, or web_path; the server fills those in."
     )
 
     EXAMPLE: ClassVar[dict] = {
         "response": (
-            "The planned dose was 51 Gy [cite:1]. "
-            "Treatment finished on February 13 [cite:2]."
+            "The planning CT and the contours show the larynx [cite:c1] [cite:c2]. "
+            "Treatment finished on February 13 [cite:c3]."
         ),
         "citations": [
-            {
-                "id": "1",
-                "file": "note.txt",
-                "web_path": "/case/note.txt",
-                "summary": "Short excerpt that supports the sentence.",
-            },
-            {
-                "id": "2",
-                "file": "completion.txt",
-                "web_path": "/case/completion.txt",
-                "summary": "Short excerpt for the second sentence.",
-            },
+            {"cite": "c1", "summary": "CT slice that supports the first claim."},
+            {"cite": "c2", "summary": "RTSTRUCT that supports the same claim."},
+            {"cite": "c3", "summary": "Note that supports the second sentence."},
         ],
     }
 
     _MARKER = re.compile(r"\[cite:([^\]]+)\]")
-    _ADJACENT = re.compile(r"\[cite:[^\]]+\]\s*[,;]?\s*\[cite:[^\]]+\]")
     _UNSET = object()
 
-    def __init__(self, text: str, opened: list[dict], known: list[dict]) -> None:
+    def __init__(
+        self,
+        text: str,
+        opened: list[dict],
+        known: list[dict],
+        calls: dict[str, dict] | None = None,
+    ) -> None:
         self.text = text.strip()
         self.opened = opened
         self.known = known
+        self.calls = calls or {}
         self._problem = self._UNSET
 
     @property
     def problem(self) -> str | None:
         """What is wrong with this reply, in one sentence, or None when it may be shown."""
         if self._problem is self._UNSET:
-            self._problem = self._find_problem()
-        return self._problem
+            found = self._find_problem()
+            self._problem = found
+            return found
+
+        return self._problem if isinstance(self._problem, str) else None
 
     def correction(self) -> str:
         """What the agent is told when this reply is refused."""
@@ -272,10 +512,30 @@ class Answer:
             f"{self.RULE} Example: {json.dumps(self.EXAMPLE)}"
         )
 
-        if self.opened:
-            text += " Opened files: " + ", ".join(item["web_path"] for item in self.opened)
+        if self.calls:
+            shown = ", ".join(
+                f"{token}={self._command(call)}" for token, call in self.calls.items()
+            )
+            text += " Tool results: " + shown
+
+        fetched = {path_key(call.get("web_path")) for call in self.calls.values()}
+        names = [
+            item["web_path"]
+            for item in self.opened
+            if path_key(item.get("web_path")) not in fetched
+        ]
+
+        if names:
+            text += " Opened files: " + ", ".join(names)
 
         return text
+
+    @staticmethod
+    def _command(call: dict) -> str:
+        raw = call.get("arguments")
+        arguments = raw if isinstance(raw, dict) else {}
+        detail = " ".join(f"{key}={value}" for key, value in arguments.items())
+        return f"{call.get('tool', '')} {detail}".strip()
 
     def _find_problem(self) -> str | None:
         if not self.opened and "[cite:" not in self.text and '"citations"' not in self.text:
@@ -306,8 +566,9 @@ class Answer:
         if not self._MARKER.search(response):
             return "The response has no [cite:id] markers."
 
-        paths = {item["web_path"] for item in (self.opened or self.known)}
-        problems = [self._citation_problem(item, response, paths) for item in citations]
+        problems = [
+            self._citation_problem(item, response, self._web_paths()) for item in citations
+        ]
 
         if not citations or all(problems):
             found = "; ".join(item for item in problems if item) or "the list is empty"
@@ -321,38 +582,61 @@ class Answer:
         except json.JSONDecodeError:
             return False
 
-    def _citation_problem(self, citation: object, response: str, paths: set[str]) -> str | None:
+    def _citation_problem(self, citation: object, response: str, paths: dict[str, str]) -> str | None:
         """Why this citation can't back the answer, or None."""
         if not isinstance(citation, dict):
             return "a citation is not an object"
 
-        cite_id = citation.get("id")
-
-        if not isinstance(cite_id, str) or not re.fullmatch(r"\S+", cite_id):
-            return f"citation id {cite_id!r} must be a string with no spaces"
-
-        if citation.get("web_path") not in paths:
-            return f"citation {cite_id} web_path {citation.get('web_path')!r} is not an opened file"
-
-        if not isinstance(citation.get("file"), str) or not citation["file"]:
-            return f'citation {cite_id} needs a "file" name'
-
         if not isinstance(citation.get("summary"), str):
-            return f'citation {cite_id} needs a "summary" string'
+            return "a citation needs a \"summary\" string"
 
-        if f"[cite:{cite_id}]" not in response:
-            return f"[cite:{cite_id}] does not appear in the response"
+        handle = citation.get("cite")
+        marker = handle if isinstance(handle, str) and handle else citation.get("id")
 
-        return None
+        if not isinstance(marker, str) or not re.fullmatch(r"\S+", marker):
+            return f"citation marker {marker!r} must be a string with no spaces"
 
-    def _marker_problem(self, response: str) -> str | None:
-        """Each marker follows the words it supports: none stand alone or side by side."""
-        if clump := self._ADJACENT.search(response):
+        if f"[cite:{marker}]" not in response:
+            return f"[cite:{marker}] does not appear in the response"
+
+        if isinstance(handle, str) and handle:
+            if handle not in self.calls:
+                return f"citation cite {handle!r} is not a tool result from this question"
+            return None
+
+        web = citation.get("web_path")
+
+        if path_key(web) in paths:
+            if not isinstance(citation.get("file"), str) or not citation["file"]:
+                return f'citation {marker} needs a "file" name'
+            return None
+
+        fetched = {path_key(call.get("web_path")) for call in self.calls.values()}
+
+        if path_key(web) in fetched:
             return (
-                f"The markers {clump.group(0)!r} sit side by side; "
-                "put each one right after the words that file supports."
+                f"citation {marker} must use the cite token for that call, "
+                f"not web_path {web!r}"
             )
 
+        if self.calls:
+            return f"citation {marker} needs the cite token from the tool result it uses"
+
+        return f"citation {marker} web_path {web!r} is not an opened file"
+
+    def _web_paths(self) -> dict[str, str]:
+        """Files a citation may name with web_path. A fetched file must use its cite token."""
+        fetched = {path_key(call.get("web_path")) for call in self.calls.values()}
+        source = self.opened or self.known
+        return {
+            path_key(item.get("web_path")): item["web_path"]
+            for item in source
+            if isinstance(item.get("web_path"), str)
+            and path_key(item.get("web_path")) not in fetched
+        }
+
+    def _marker_problem(self, response: str) -> str | None:
+        """A marker follows the words it supports and is not the whole sentence."""
         protected = self._MARKER.sub(lambda match: match.group(0).replace(".", "\0"), response)
         sentences = [part.replace("\0", ".").strip() for part in re.split(r"[.!?]+", protected)]
 

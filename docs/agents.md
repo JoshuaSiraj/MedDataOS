@@ -28,9 +28,9 @@ These `.env` values go on that request:
 | `AGENT_API_KEY` | Sent as a bearer token, if set. |
 | `AGENT_TIMEOUT` | Seconds to wait for each response. Default `120`. |
 
-If the response has `tool_calls`, the server runs them on the open case and sends the results back as `tool` messages, up to eight rounds. When a response has no tool calls, its content is the answer. A markdown code fence around JSON is removed.
+If the response has `tool_calls`, the server runs them on the open case and sends the results back as `tool` messages, up to eight rounds. The patient-card request allows sixteen rounds. When a response has no tool calls, its content is the answer. A markdown code fence around JSON is removed.
 
-If the citations are wrong, the server sends the agent's answer back with the reason and asks for a corrected one. After three corrections, or if the agent errors or times out, the page shows a short failure message instead of waiting.
+If the citations are wrong, the server sends the agent's answer back with the reason and asks for a corrected one. After six corrections, or if the agent errors or times out, the page shows a short failure message instead of waiting.
 
 If the endpoint answers `400` or `422` to a request that includes `tools`, the server retries that request without them. That agent can then only answer from what is already in the message.
 
@@ -60,9 +60,9 @@ pixi run serve /path/to/folder --agent-url http://127.0.0.1:8001/v1 --agents age
 
 `--specialist notes=http://127.0.0.1:8002/v1` does the same for one agent, and can be repeated. A name is a short lowercase word. The same name cannot be listed twice.
 
-The router is given one extra tool per specialist, `consult_notes`, `consult_imaging`, and so on. The description is the only routing hint. The server runs that call: it posts the question and the datactrl tools to the specialist, and does not give the specialist a `consult_` tool, so agents cannot call each other. Each specialist is called at most once per question; a second call returns the first result. A timeout, an HTTP error, or citations that still fail after three corrections become a tool error. The router can still answer from the specialists that succeeded.
+The router is given one extra tool per specialist, `consult_notes`, `consult_imaging`, and so on. The description is the only routing hint. The server runs that call: it posts the question and the datactrl tools to the specialist, and does not give the specialist a `consult_` tool, so agents cannot call each other. Each specialist is called at most once per question; a second call returns the first result. A timeout, an HTTP error, or citations that still fail after six corrections become a tool error. The router can still answer from the specialists that succeeded.
 
-A specialist may answer in plain text, or with the citation JSON below. Each `web_path` must be a file in the open case. Files it cites count as opened, so the router's own reply has to cite them too. With no specialists registered, none of this is added and the server talks only to `--agent-url`.
+A specialist may answer in plain text, or with the citation JSON below. A `describe` or `fetch` it calls comes back with a `cite` token, and that token is what the citation names. A specialist that reads the case itself, without those tools, cites the file's `web_path` instead. Files it cites count as opened, so the router's own reply has to cite them too. With no specialists registered, none of this is added and the server talks only to `--agent-url`.
 
 ## Clinical notes specialist
 
@@ -109,16 +109,12 @@ Plain text is fine when the agent has not called `describe` or `fetch`. After ei
 
 ```json
 {
-  "response": "The note records fatigue [cite:1].",
+  "response": "The planning CT and the contours show the larynx [cite:c1] [cite:c2].",
   "citations": [
-    {
-      "id": "1",
-      "file": "clinic_note.txt",
-      "web_path": "/case/clinic_note.txt",
-      "summary": "Chief complaint: fatigue."
-    }
+    {"cite": "c1", "summary": "CT slice."},
+    {"cite": "c2", "summary": "RTSTRUCT on the same slice."}
   ]
 }
 ```
 
-Put each `[cite:id]` immediately after the sentence that file supports, one marker per sentence. `web_path` must be a file opened for this question.
+Put `[cite:token]` right after the words that call supports. Several tokens may follow one claim. `cite` is the token on the `describe` or `fetch` result, and the marker uses that same token. The server fills in `id`, `file`, `web_path`, and the command before the page sees the reply. A specialist that did not call those tools cites `web_path` instead, with an `id` such as `1`, and that path must be a file in the open case.

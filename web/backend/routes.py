@@ -1,5 +1,6 @@
 """Web routes: the page and its socket, chat, and the sidebar data."""
 
+import base64
 import json
 import os
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 import dispatch
 from case import case
@@ -176,6 +177,70 @@ async def note_span(patient_id: str, id: str, start: int, end: int, context: int
     if status != 200:
         return JSONResponse(status_code=status, content=payload)
     return payload
+
+
+def dicom_preview_payload(
+    cited_path: str,
+    slice_index: int | None = None,
+    window: str | None = None,
+    overlay: bool = False,
+    roi: str | None = None,
+) -> tuple[int, bytes | dict]:
+    """PNG bytes for one fetched DICOM slice, or an error dict and status code."""
+    resource_id = case.dicom_preview_id(cited_path)
+    opened = _opened_case()
+
+    if resource_id is None or opened is None:
+        return 404, {"error": "no DICOM preview for that file"}
+
+    options: dict = {}
+
+    if slice_index is not None:
+        options["slice_index"] = slice_index
+
+    if window:
+        options["window"] = window
+
+    if overlay or roi:
+        options["overlay"] = True
+
+    if roi:
+        options["roi"] = roi
+
+    try:
+        fetched = opened.fetch(resource_id, view="preview", **options)
+        encoded = (fetched.get("data") or {}).get("image_base64")
+        png = base64.b64decode(encoded) if isinstance(encoded, str) else b""
+    except Exception as exc:
+        return 400, {"error": str(exc)}
+
+    if not png:
+        return 404, {"error": "preview had no image"}
+
+    return 200, png
+
+
+@router.get("/api/dicom/previews")
+async def dicom_previews():
+    """Paths the page should render as a DICOM preview when cited."""
+    return case.dicom_preview_paths()
+
+
+@router.get("/api/dicom/preview")
+async def dicom_preview(
+    web_path: str,
+    slice_index: int | None = None,
+    window: str | None = None,
+    overlay: bool = False,
+    roi: str | None = None,
+):
+    """The preview image for one cited DICOM slice."""
+    status, payload = dicom_preview_payload(web_path, slice_index, window, overlay, roi)
+
+    if status != 200:
+        return JSONResponse(status_code=status, content=payload)
+
+    return Response(content=payload, media_type="image/png")
 
 
 @router.get("/api/health")

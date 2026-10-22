@@ -15,7 +15,7 @@ import os
 import urllib.error
 import urllib.request
 
-from case import Answer, Profile, case
+from case import Answer, Profile, case, path_key
 from registry import Specialist
 from state import log, short_session, state
 
@@ -118,16 +118,18 @@ class Conversation:
         client: AgentClient | None = None,
         tools: list[dict] | None = None,
         consult: bool = False,
+        max_steps: int | None = None,
     ) -> None:
         self.messages = messages
         self.session_id = session_id
         self.client = client or AgentClient.from_env()
         self.tools = list(case.tools if tools is None else tools)
         self.consult = consult
+        self.max_steps = self.MAX_STEPS if max_steps is None else max_steps
 
     async def reply(self) -> str:
         """Call the agent until it stops asking for tools, then return its text."""
-        for _ in range(self.MAX_STEPS):
+        for _ in range(self.max_steps):
             message = await self._next()
             self.messages.append(message)
             calls = message.get("tool_calls") or []
@@ -142,7 +144,7 @@ class Conversation:
                     "content": json.dumps(await self._run_call(call)),
                 })
 
-        raise AgentError(f"no answer after {self.MAX_STEPS} steps")
+        raise AgentError(f"no answer after {self.max_steps} steps")
 
     async def _next(self) -> dict:
         try:
@@ -219,12 +221,9 @@ def _client_for(url: str) -> AgentClient:
 
 _SPECIALIST_RULE = (
     "The reply may be plain text. "
-    "To cite files, the whole reply is one JSON object with a \"response\" string "
-    "and a \"citations\" list, like the example. "
-    "Put each [cite:id] right after the words that file supports. "
-    "A sentence may cite several files, but never put markers side by side "
-    "or group them at the end of the answer. "
-    "Each citation's web_path must be one of the case files."
+    f"{Answer.RULE} "
+    "If you did not call describe or fetch, each citation uses an id, file, and web_path, "
+    "and web_path must be a case file. The marker is then [cite:] plus that id."
 )
 
 
@@ -256,19 +255,22 @@ def _remember_citations(session_id: str, text: str) -> None:
     if not isinstance(citations, list):
         return
 
-    known = {item["web_path"]: item for item in case.files()}
+    known = {path_key(item["web_path"]): item for item in case.files()}
     opened = state.reads.setdefault(session_id, [])
-    seen = {item["web_path"] for item in opened}
+    seen = {path_key(item.get("web_path")) for item in opened}
+    calls = state.calls.get(session_id, {})
+    fetched = {path_key(call.get("web_path")) for call in calls.values()}
 
     for citation in citations:
-        if not isinstance(citation, dict):
+        if not isinstance(citation, dict) or citation.get("cite"):
             continue
 
-        ref = known.get(citation.get("web_path"))
+        ref = known.get(path_key(citation.get("web_path")))
+        key = path_key(ref.get("web_path")) if ref else ""
 
-        if ref and ref["web_path"] not in seen:
+        if ref and key not in seen and key not in fetched:
             opened.append(ref)
-            seen.add(ref["web_path"])
+            seen.add(key)
 
 
 async def consult_specialist(specialist: Specialist, question: str, session_id: str) -> dict:
@@ -296,7 +298,9 @@ async def consult_specialist(specialist: Specialist, question: str, session_id: 
                 problem = "The reply was empty."
                 verdict = None
             else:
-                verdict = Answer(text, [], case.files())
+                verdict = Answer(
+                    text, [], case.files(), state.calls.get(session_id, {})
+                )
                 problem = verdict.problem or ""
 
             if verdict is not None and verdict.problem is None:
@@ -328,17 +332,14 @@ async def consult_specialist(specialist: Specialist, question: str, session_id: 
 class Question:
     """One user question: ask, then send refused answers back until one passes."""
 
-    MAX_REVISIONS = 3
+    MAX_REVISIONS = 6
     PROMPT = (
         "You answer questions about one patient's medical files. "
         "Use the tools to read the files before answering. "
         "Ground your answer in the files. "
         "If you open no files, reply to the user in plain text, not JSON. "
         "Otherwise the whole reply is one JSON object that follows the citation rule below, "
-        "with no sentences before or after it. "
-        "Put each [cite:id] inline, right after the words that file supports. "
-        "Do not put markers side by side or collect them at the end. "
-        "Use a short citation id such as 1."
+        "with no sentences before or after it."
     )
 
     def __init__(self, session_id: str) -> None:
@@ -370,7 +371,9 @@ class Question:
                     return
 
                 opened = state.reads.get(self.session_id, [])
-                verdict = Answer(text, opened, case.files())
+                verdict = Answer(
+                    text, opened, case.files(), state.calls.get(self.session_id, {})
+                )
                 problem = verdict.problem or ""
 
                 if verdict.problem is None:
@@ -411,7 +414,7 @@ class Question:
                 "Specialists: " + roster + ". "
                 "Call consult_<name> with the part of the question that specialist answers. "
                 "Call each specialist at most once. "
-                "When a specialist returns citation JSON, cite those files in your own reply. "
+                "When a specialist returns citation JSON, copy those citations into your own reply. "
                 "If a specialist returns an error, say so and answer from the others."
             )
 
@@ -422,8 +425,11 @@ class Question:
         if self.session_id not in state.pending:
             return
 
+        calls = state.calls.get(self.session_id, {})
+        message = case.expand_citations(message, calls)
         state.pending.discard(self.session_id)
         state.reads.pop(self.session_id, None)
+        state.calls.pop(self.session_id, None)
 
         session = state.sessions[self.session_id]
         session.add("assistant", message)
@@ -454,6 +460,7 @@ class Question:
 class PatientCard:
     """The startup request that asks the agent to fill in the sidebar card."""
 
+    MAX_STEPS = 16
     PROMPT = (
         "You fill in the patient card for one patient's medical files. "
         "Use the tools to read the files. Do not guess: leave a field empty when the files do not say. "
@@ -471,6 +478,7 @@ class PatientCard:
                 {"role": "user", "content": "Fill in the patient card."},
             ],
             "",
+            max_steps=self.MAX_STEPS,
         )
 
         try:
