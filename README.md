@@ -53,7 +53,7 @@ sequenceDiagram
     Agent-->>Server: Answer
     Server->>Server: Check citations against describe and fetch calls
     alt Citations missing or wrong
-        Server->>Agent: Refusal and the reason, up to 3 times
+        Server->>Agent: Refusal and the reason, up to 6 corrections
         Agent-->>Server: Corrected answer
     end
     Server->>Page: WebSocket message
@@ -62,12 +62,14 @@ sequenceDiagram
 
 At startup the server also asks the agent to fill the patient card from the files. Until that reply arrives, and if it never does, the sidebar shows the folder name.
 
+If the agent opens no files, it answers in plain text. If it still can't cite correctly after six corrections, or the agent can't be reached, the page shows that instead of waiting.
+
 A successful `describe` or `fetch` of a file in the case list counts as opening it. The answer then has to be the citation JSON in [Connect an agent](docs/agents.md). With no file opened, plain text is accepted, and a JSON object is sent back with a request for plain text.
 
 With no extra flags, the page talks only to `--agent-url`. Optional specialists are other chat endpoints, registered with `--agents` or repeated `--specialist name=url` flags. The server offers each one to the router as `consult_<name>`, runs that call, and still checks citations. [Connect an agent](docs/agents.md) describes both.
 
 The example agent forwards to `OPENAI_MODEL`, or to Azure OpenAI when `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_DEPLOYMENT` are set.
 
-If the citations are still wrong after the original answer and three corrections, the page shows `The agent could not produce an answer with valid citations` and the last problem. If the agent cannot be reached, times out, or returns something other than a chat completion, the page shows `The agent failed` and the reason.
+If the citations are still wrong after the original answer and six corrections, the page shows `The agent could not produce an answer with valid citations` and the last problem. If the agent cannot be reached, times out, or returns something other than a chat completion, the page shows `The agent failed` and the reason.
 
 The page renders a citation JSON answer as text with a marker for each `[cite:id]`. Hovering or opening a marker loads that file from the folder. [The page](web/README.md) covers the sidebar, pins, and attachments.

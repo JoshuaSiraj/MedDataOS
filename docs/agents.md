@@ -20,6 +20,10 @@ Each request is JSON:
 
 `AGENT_API_KEY`, when set, is sent as `Authorization: Bearer …`. `AGENT_TIMEOUT` is how many seconds the server waits for each response. The default is `120`.
 
+If the response has `tool_calls`, the server runs them on the open case and sends the results back as `tool` messages, up to eight rounds. The patient-card request allows sixteen rounds. When a response has no tool calls, its content is the answer. A markdown code fence around JSON is removed.
+
+If the citations are wrong, the server sends the agent's answer back with the reason and asks for a corrected one. After six corrections, or if the agent errors or times out, the page shows a short failure message instead of waiting.
+
 The system message for a question contains:
 
 - instructions to read the files with the tools and to ground the answer in them,
@@ -79,9 +83,9 @@ pixi run serve /path/to/folder --agent-url http://127.0.0.1:8001/v1 --agents age
 
 `--specialist notes=http://127.0.0.1:8002/v1` does the same for one agent, and can be repeated. A name is a short lowercase word. The same name cannot be listed twice.
 
-The router is given one extra tool per specialist, `consult_notes`, `consult_imaging`, and so on. The description is the only routing hint. The server runs that call: it posts the question and the datactrl tools to the specialist, and does not give the specialist a `consult_` tool, so agents cannot call each other. Each specialist is called at most once per question; a second call returns the first result. A timeout, an HTTP error, or citations that still fail after three corrections become a tool error. The router can still answer from the specialists that succeeded.
+The router is given one extra tool per specialist, `consult_notes`, `consult_imaging`, and so on. The description is the only routing hint. The server runs that call: it posts the question and the datactrl tools to the specialist, and does not give the specialist a `consult_` tool, so agents cannot call each other. Each specialist is called at most once per question; a second call returns the first result. A timeout, an HTTP error, or citations that still fail after six corrections become a tool error. The router can still answer from the specialists that succeeded.
 
-A specialist may answer in plain text, or with the citation JSON below. Each `web_path` must be a file in the open case. Files it cites count as opened, so the router's own reply has to cite them too. With no specialists registered, none of this is added and the server talks only to `--agent-url`.
+A specialist may answer in plain text, or with the citation JSON below. A `describe` or `fetch` it calls comes back with a `cite` token, and that token is what the citation names. A specialist that reads the case itself, without those tools, cites the file's `web_path` instead. Files it cites count as opened, so the router's own reply has to cite them too. With no specialists registered, none of this is added and the server talks only to `--agent-url`.
 
 ## Clinical notes specialist
 
@@ -118,35 +122,52 @@ If a file was opened, the whole answer must be one JSON object:
 
 ```json
 {
-  "response": "The planned dose was 51 Gy [cite:1]. Treatment finished on February 13 [cite:2].",
+  "response": "The planning CT shows the larynx [cite:c1]. The contours outline it [cite:c2]. Treatment finished on February 13 [cite:c3]. The dose was 51 Gy in 20 fractions [cite:c3].",
   "citations": [
     {
-      "id": "1",
-      "file": "note.txt",
-      "web_path": "/case/note.txt",
-      "summary": "Short excerpt that supports the sentence."
+      "cite": "c1",
+      "summary": "Axial planning CT of the neck. The larynx is included on the displayed slice."
     },
     {
-      "id": "2",
-      "file": "completion.txt",
-      "web_path": "/case/completion.txt",
-      "summary": "Short excerpt for the second sentence."
+      "cite": "c2",
+      "summary": "RTSTRUCT for that planning CT. The larynx contour is named and outlined on the same slice.",
+      "fields": ["roi_names"]
+    },
+    {
+      "cite": "c3",
+      "agent": "clinical_notes",
+      "summary": "Radiation oncology completion note dated 13 February. External-beam treatment finished that day, 51 Gy in 20 fractions, with follow-up arranged in radiation oncology.",
+      "evidence": [
+        {
+          "n": 1,
+          "claim": "Treatment finished on February 13",
+          "quote": "Treatment completed February 13"
+        },
+        {
+          "n": 2,
+          "claim": "The prescribed dose was 51 Gy in 20 fractions",
+          "quote": "51 Gy in 20 fractions"
+        }
+      ],
+      "conflicts": [
+        {
+          "attribute": "rt.end_date",
+          "severity": "high",
+          "rationale": "The completion note and the follow-up note give different end dates.",
+          "values": [
+            {"value": "February 13", "note_label": "rt-completion", "start": 120, "end": 151},
+            {"value": "February 20", "note_label": "follow-up", "note_id": "note:followup", "start": 40, "end": 51}
+          ]
+        }
+      ]
     }
   ]
 }
 ```
 
-That object is the example the server sends in the prompt. The check accepts an answer when all of these hold:
+Put `[cite:token]` right after the words that call supports. A sentence may cite several calls, but the markers cannot sit side by side or be grouped at the end of the answer. `cite` is the token on the `describe` or `fetch` result, and the marker uses that same token. The server fills in `id`, `file`, `web_path`, and the command before the page sees the reply. The summary is two or three sentences of what that call shows: the finding, the date, and the measurement, so a reviewer can check the card without opening the file. A DICOM metadata citation may include `fields`, the metadata keys that support the claim. The values stay on the server. Read a note with `fetch` `view=text`. A citation of that call must include `evidence` with `quote`, a contiguous passage copied from the `text` that fetch returned. Several claims from one fetch are several evidence items on that one citation, each with its own `quote` from that same text, and the same `[cite:token]` goes after each of those claims. The server finds each passage, sets `start` and `end`, and fills `span_url`. It refuses a quote that is not in the note, and it refuses a quote that is the whole note. When notes disagree, the citation also sends `conflicts`. A specialist that did not call those tools cites `web_path` instead, with an `id` such as `1`, and that path must be a file in the open case. It may send `span_url` itself.
 
-- `response` is a string and `citations` is a list with at least one usable entry.
-- `response` contains `[cite:id]` for each usable citation. `id` is a string with no spaces.
-- `file` is a non-empty string and `summary` is a string.
-- `web_path` is one of the files opened for this question.
-- Each marker sits after the words it supports. Two markers with only space or a comma or semicolon between them are refused, and so is a marker that is the only text in a sentence. One sentence may cite more than one file when words separate the markers.
-
-Usable entries are enough. A list may also contain entries the check ignores, as long as one entry passes.
-
-A refused answer is appended to the conversation, followed by a user message that starts with `The server refused that answer.`, states the problem, repeats the rule and the example, and lists the opened `web_path` values. The server does this at most three times after the original answer. The next failure is shown on the page as `The agent could not produce an answer with valid citations. Last problem: …`.
+A refused answer is appended to the conversation, followed by a user message that starts with `The server refused that answer.`, states the problem, repeats the rule and the example, and lists the opened `web_path` values. The server does this at most six times after the original answer. The next failure is shown on the page as `The agent could not produce an answer with valid citations. Last problem: …`.
 
 Anything other than a chat completion (`choices[0].message` as an object), a connection error, or a timeout is shown as `The agent failed: …`.
 
