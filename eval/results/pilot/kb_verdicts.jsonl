@@ -1,0 +1,2 @@
+{"id": "KB01", "type": "clean", "gold": null, "rep_pairs": [[], [], []]}
+{"id": "KB02", "type": "seeded", "gold": ["ecg", "echo"], "rep_pairs": [[["ecg", "echo"]], [["chest_xray", "echo"], ["ecg", "echo"], ["lab_results", "medication"]], [["chest_xray", "echo"], ["echo", "heart_sounds"]]]}

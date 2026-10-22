@@ -1,0 +1,17 @@
+{
+  "run": "full",
+  "date": "2026-07-24",
+  "system_model": "gemini-3.1-pro-preview",
+  "judge_model": "gpt-5.5-2026-04-23",
+  "judge_seed": 7,
+  "n_queries": 100,
+  "n_judged": 91,
+  "n_kb_sets": 40,
+  "median_latency_s": 11.77,
+  "routing_exact_tolerant_pct": 75,
+  "faithfulness_pct": 92,
+  "hallucination_pct": 12,
+  "n_cited": 855,
+  "seeded_recall_pct": 93,
+  "clean_fp_pct": 0
+}

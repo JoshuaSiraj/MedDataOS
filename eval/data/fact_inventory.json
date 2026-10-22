@@ -1,0 +1,678 @@
+{
+  "patients": {
+    "P0001": {
+      "themes": [
+        "exertional_angina",
+        "lateral_ischemia",
+        "diabetes_control",
+        "statin_titration"
+      ],
+      "clinical_notes": [
+        "exertional substernal chest pressure 4/10",
+        "mild dyspnea on exertion",
+        "PMH HTN/T2DM/HLD/asthma",
+        "penicillin allergy"
+      ],
+      "chest_xray": [
+        "mild cardiomegaly CTR 0.55",
+        "clear lung fields",
+        "prominent aortic knob"
+      ],
+      "ecg": [
+        "normal sinus rhythm 72 bpm",
+        "ST depression 1mm V4-V6 (lateral ischemia)",
+        "T-wave flattening I/aVL",
+        "QTc 420ms normal"
+      ],
+      "echo": [
+        "LVEF 45% mildly reduced",
+        "lateral wall hypokinesis",
+        "trace mitral regurgitation",
+        "diastolic dysfunction grade I"
+      ],
+      "heart_sounds": [
+        "grade II/VI systolic murmur at apex",
+        "no S3/S4",
+        "regular 72 bpm"
+      ],
+      "lab_results": [
+        "troponin I 0.04 borderline",
+        "BNP 180 mildly elevated",
+        "HbA1c 7.2%",
+        "LDL 142 elevated",
+        "eGFR 68 mildly reduced"
+      ],
+      "medication": [
+        "Lisinopril 20mg",
+        "Metformin 1000mg BID",
+        "Atorvastatin 40mg (possibly subtherapeutic)",
+        "Aspirin 81mg",
+        "penicillin allergy"
+      ]
+    },
+    "P0002": {
+      "themes": [
+        "community_acquired_pneumonia",
+        "infection_labs",
+        "reactive_tachycardia",
+        "normal_heart"
+      ],
+      "clinical_notes": [
+        "5-day fever peak 39.2C",
+        "productive purulent cough",
+        "right pleuritic chest pain",
+        "RLL crackles + dullness",
+        "SpO2 94%"
+      ],
+      "chest_xray": [
+        "right lower lobe consolidation with air bronchograms",
+        "no pleural effusion",
+        "normal heart size"
+      ],
+      "ecg": [
+        "sinus tachycardia 112 bpm",
+        "no ST changes",
+        "tachycardia secondary to fever"
+      ],
+      "echo": [
+        "LVEF 62% normal",
+        "no wall motion abnormalities",
+        "RVSP 28 normal"
+      ],
+      "heart_sounds": [
+        "tachycardic 112 bpm",
+        "no murmurs/gallops/rubs"
+      ],
+      "lab_results": [
+        "WBC 15.2 elevated neutrophil-predominant",
+        "CRP 148 markedly elevated",
+        "procalcitonin 1.8 (bacterial)",
+        "lactate 1.4 normal"
+      ],
+      "medication": [
+        "Ceftriaxone 1g IV daily",
+        "Azithromycin 500mg IV daily",
+        "Albuterol PRN",
+        "no allergies"
+      ]
+    },
+    "P0003": {
+      "themes": [
+        "healthy_wellness_exam",
+        "all_normal",
+        "no_cardiac_meds"
+      ],
+      "clinical_notes": [
+        "annual wellness, no acute complaints",
+        "mild deconditioning",
+        "GAD on sertraline",
+        "exam unremarkable",
+        "sulfa allergy"
+      ],
+      "chest_xray": [
+        "no acute cardiopulmonary abnormality",
+        "CTR 0.48 normal"
+      ],
+      "ecg": [
+        "normal sinus rhythm 74 bpm",
+        "entirely unremarkable tracing"
+      ],
+      "echo": [
+        "LVEF 60% normal",
+        "no valvular disease",
+        "normal diastolic function"
+      ],
+      "heart_sounds": [
+        "normal S1/S2",
+        "no murmurs/gallops/rubs",
+        "within normal limits"
+      ],
+      "lab_results": [
+        "CBC normal",
+        "LDL 112",
+        "fasting glucose 92 normal",
+        "TSH 1.8 normal"
+      ],
+      "medication": [
+        "Sertraline 50mg (GAD)",
+        "no cardiac medications",
+        "sulfa allergy"
+      ]
+    },
+    "P0004": {
+      "themes": [
+        "acute_decompensated_hfref",
+        "volume_overload",
+        "afib",
+        "functional_mr",
+        "ace_allergy",
+        "worsening_ckd"
+      ],
+      "clinical_notes": [
+        "progressive dyspnea at rest",
+        "4kg weight gain / bilateral edema",
+        "orthopnea + PND",
+        "ACE inhibitor allergy (angioedema)"
+      ],
+      "chest_xray": [
+        "cardiomegaly CTR 0.62",
+        "pulmonary vascular congestion + cephalization",
+        "bilateral pleural effusions",
+        "Kerley B lines"
+      ],
+      "ecg": [
+        "atrial fibrillation, controlled rate 88",
+        "left axis deviation",
+        "low voltage limb leads",
+        "QRS 110ms"
+      ],
+      "echo": [
+        "LVEF 25% severely reduced (down from 30%)",
+        "global hypokinesis + inferior akinesis",
+        "moderate functional MR",
+        "E/e' 18 elevated filling pressures",
+        "RVSP 48"
+      ],
+      "heart_sounds": [
+        "irregularly irregular (AFib)",
+        "S3 gallop present",
+        "grade III/VI holosystolic murmur at apex radiating to axilla (MR)"
+      ],
+      "lab_results": [
+        "BNP 1840 markedly elevated",
+        "creatinine 1.8 (up from 1.4)",
+        "eGFR 32 worsening CKD",
+        "sodium 131 hyponatremia",
+        "Hgb 10.8 mild anemia"
+      ],
+      "medication": [
+        "Furosemide 40mg BID",
+        "Carvedilol 12.5mg BID",
+        "Losartan 50mg (switched from lisinopril)",
+        "Apixaban 5mg BID",
+        "ACE inhibitor allergy"
+      ]
+    },
+    "P0005": {
+      "themes": [
+        "benign_palpitations",
+        "PACs",
+        "young_healthy",
+        "caffeine",
+        "no_meds"
+      ],
+      "clinical_notes": [
+        "recurrent palpitations 2 months",
+        "triggered by caffeine/stress",
+        "no syncope",
+        "3-4 cups coffee daily",
+        "no allergies/meds"
+      ],
+      "chest_xray": [
+        "entirely normal chest radiograph",
+        "CTR 0.44"
+      ],
+      "ecg": [
+        "normal sinus rhythm 78 bpm",
+        "isolated PACs, normal P-wave morphology",
+        "no pre-excitation/delta waves",
+        "benign PACs"
+      ],
+      "echo": [
+        "LVEF 64% normal",
+        "no structural abnormalities",
+        "no accessory pathway substrate"
+      ],
+      "heart_sounds": [
+        "normal S1/S2",
+        "occasional early beat (PACs)",
+        "no murmurs"
+      ],
+      "lab_results": [
+        "CBC normal",
+        "TSH 1.6 normal (rules out thyroid)",
+        "magnesium 2.0 normal",
+        "ferritin 28 low-normal",
+        "no electrolyte abnormalities"
+      ],
+      "medication": [
+        "no prescription medications",
+        "multivitamin",
+        "no allergies",
+        "counseled caffeine reduction"
+      ]
+    },
+    "P0006": {
+      "themes": [
+        "copd_exacerbation",
+        "cor_pulmonale",
+        "pulmonary_hypertension",
+        "type2_respiratory_failure",
+        "aspirin_allergy"
+      ],
+      "clinical_notes": [
+        "3-day worsening dyspnea",
+        "purulent yellow-green sputum",
+        "rescue inhaler 8-10x/day",
+        "SpO2 88%",
+        "aspirin allergy (bronchospasm)"
+      ],
+      "chest_xray": [
+        "bilateral hyperinflation, flattened diaphragms",
+        "hyperlucent lungs, vascular attenuation",
+        "vertical heart",
+        "no consolidation"
+      ],
+      "ecg": [
+        "sinus tachycardia 102 bpm",
+        "right axis deviation +110",
+        "P pulmonale (RA enlargement)",
+        "RV strain pattern",
+        "cor pulmonale"
+      ],
+      "echo": [
+        "LVEF 58% normal",
+        "RV dilation with mildly reduced RV function",
+        "RVSP 42 (pulmonary HTN)",
+        "flattened septum D-sign (RV overload)"
+      ],
+      "heart_sounds": [
+        "distant heart sounds (hyperinflation)",
+        "loud P2 (elevated pulmonary pressure)",
+        "expiratory wheeze",
+        "no murmurs"
+      ],
+      "lab_results": [
+        "ABG pH 7.34 / pCO2 52 / pO2 54 (type 2 resp failure)",
+        "WBC 11.8 mildly elevated",
+        "CRP 64 elevated",
+        "Hgb 16.2 secondary polycythemia",
+        "BNP 220"
+      ],
+      "medication": [
+        "Tiotropium (LAMA)",
+        "Fluticasone/Salmeterol (ICS/LABA)",
+        "Prednisolone 40mg x5d (exacerbation)",
+        "Doxycycline (antibiotic)",
+        "aspirin allergy"
+      ]
+    },
+    "P0007": {
+      "themes": [
+        "new_onset_afib",
+        "thyroid_excluded",
+        "anticoagulation_decision",
+        "iodine_allergy"
+      ],
+      "clinical_notes": [
+        "2-week intermittent irregular heartbeat",
+        "new exertional dyspnea",
+        "irregularly irregular pulse, variable S1",
+        "iodine contrast allergy",
+        "family history AFib"
+      ],
+      "chest_xray": [
+        "mild cardiomegaly CTR 0.54",
+        "mild left atrial enlargement",
+        "no congestion"
+      ],
+      "ecg": [
+        "atrial fibrillation, ventricular response 92",
+        "absent P waves, fibrillatory baseline",
+        "left axis deviation",
+        "new AFib"
+      ],
+      "echo": [
+        "LVEF 58% preserved",
+        "LA mildly dilated 4.1cm (AFib substrate)",
+        "diastolic dysfunction grade I",
+        "no LAA thrombus (limited without TEE)"
+      ],
+      "heart_sounds": [
+        "irregularly irregular ~92 bpm (AFib)",
+        "variable S1 intensity",
+        "no murmurs"
+      ],
+      "lab_results": [
+        "TSH 2.1 normal (thyroid excluded)",
+        "free T4 normal",
+        "BNP 142 mildly elevated",
+        "potassium 4.1 normal",
+        "magnesium 2.1 normal"
+      ],
+      "medication": [
+        "Amlodipine 10mg (HTN)",
+        "Levothyroxine 75mcg",
+        "Apixaban 5mg BID (CHA2DS2-VASc 3)",
+        "Metoprolol succinate 50mg (rate control)",
+        "iodine contrast allergy"
+      ]
+    },
+    "P0008": {
+      "themes": [
+        "poorly_controlled_dm2",
+        "hypertensive_heart_disease",
+        "lvh_strain",
+        "diabetic_nephropathy",
+        "cardiorenal_meds"
+      ],
+      "clinical_notes": [
+        "worsening fatigue + blurred vision",
+        "home glucose >250",
+        "non-healing plantar toe ulcer",
+        "S4 gallop, decreased monofilament sensation",
+        "BP 152/94",
+        "no allergies"
+      ],
+      "chest_xray": [
+        "cardiomegaly CTR 0.56 (hypertensive heart disease)",
+        "clear lungs",
+        "body habitus limits detail"
+      ],
+      "ecg": [
+        "normal sinus rhythm 82 bpm",
+        "LVH by voltage (Sokolow-Lyon >35mm)",
+        "lateral ST depression + T-inversions (LVH strain)",
+        "QTc 428ms"
+      ],
+      "echo": [
+        "concentric LVH (IVSd 13mm)",
+        "LVEF 50% low-normal",
+        "diastolic dysfunction grade II (pseudonormal), E/e' 14",
+        "trace MR"
+      ],
+      "heart_sounds": [
+        "S4 gallop at apex (LVH)",
+        "normal S1/S2",
+        "no murmurs",
+        "mild pedal edema"
+      ],
+      "lab_results": [
+        "HbA1c 10.2% markedly elevated",
+        "fasting glucose 268",
+        "eGFR 58 (CKD 3a)",
+        "urine ACR 280 (diabetic nephropathy)",
+        "triglycerides 242"
+      ],
+      "medication": [
+        "Metformin 1000mg BID",
+        "Glipizide 10mg BID",
+        "Lisinopril 20mg",
+        "Amlodipine 10mg",
+        "Atorvastatin 40mg",
+        "recommend add SGLT2 inhibitor / GLP-1",
+        "no allergies"
+      ]
+    },
+    "P0009": {
+      "themes": [
+        "severe_aortic_stenosis",
+        "exertional_syncope",
+        "as_murmur",
+        "lvh_pressure_overload",
+        "amlodipine_caution",
+        "tavr_workup"
+      ],
+      "clinical_notes": [
+        "2 exertional syncopal episodes",
+        "progressive exertional dyspnea (1 block)",
+        "narrow pulse pressure 134/62",
+        "grade 4/6 systolic murmur to carotids",
+        "pulsus parvus et tardus",
+        "codeine allergy"
+      ],
+      "chest_xray": [
+        "mild cardiomegaly CTR 0.55",
+        "post-stenotic ascending aorta dilation",
+        "aortic valve calcification",
+        "mild pulmonary congestion"
+      ],
+      "ecg": [
+        "normal sinus rhythm 68 bpm",
+        "LVH by voltage (Sokolow-Lyon >40mm)",
+        "lateral ST depression + T-inversions (LVH strain)",
+        "PR 184ms borderline 1st-degree AV block"
+      ],
+      "echo": [
+        "severe AS: AVA 0.7 cm2, mean gradient 52, peak velocity 4.8 m/s",
+        "heavily calcified trileaflet valve",
+        "concentric LVH IVSd 14mm",
+        "LVEF 52% preserved",
+        "mild AR"
+      ],
+      "heart_sounds": [
+        "harsh crescendo-decrescendo systolic ejection murmur 4/6 at RUSB radiating to carotids",
+        "diminished/delayed S2 (soft A2)",
+        "S4 gallop",
+        "delayed carotid upstroke"
+      ],
+      "lab_results": [
+        "Hgb 12.8 mild anemia (pre-TAVR)",
+        "BNP 480 elevated",
+        "troponin 0.01 normal",
+        "creatinine 1.2, eGFR 62",
+        "INR 1.0"
+      ],
+      "medication": [
+        "Amlodipine 5mg (caution in severe AS)",
+        "Hydrochlorothiazide 12.5mg",
+        "Alendronate 70mg weekly",
+        "Aspirin 81mg (pre-TAVR)",
+        "codeine allergy"
+      ]
+    },
+    "P0010": {
+      "themes": [
+        "post_anterior_stemi",
+        "dapt",
+        "lv_recovery",
+        "prior_infarct_ecg",
+        "lisinopril_intolerance",
+        "depression"
+      ],
+      "clinical_notes": [
+        "3-month post-anterior STEMI (PCI/DES to LAD)",
+        "improving exercise tolerance, cardiac rehab",
+        "no recurrent chest pain",
+        "adherent to DAPT",
+        "lisinopril intolerance (dry cough)"
+      ],
+      "chest_xray": [
+        "mild cardiomegaly CTR 0.52 (improved)",
+        "clear lungs",
+        "post-MI remodeling without decompensation"
+      ],
+      "ecg": [
+        "normal sinus rhythm 62 bpm",
+        "Q waves V1-V3 (prior anterior MI)",
+        "upright symmetric anterior T-waves (no ongoing ischemia)",
+        "stable vs prior"
+      ],
+      "echo": [
+        "LVEF 42% mildly reduced (improved from 35%)",
+        "anterior/anteroapical hypokinesis (LAD territory)",
+        "small apical scar",
+        "no aneurysm/thrombus"
+      ],
+      "heart_sounds": [
+        "normal S1/S2",
+        "no S3/S4",
+        "no murmurs",
+        "stable 3-month post-MI"
+      ],
+      "lab_results": [
+        "troponin undetectable (no recurrent ischemia)",
+        "LDL 58 at goal on rosuvastatin 40mg",
+        "HbA1c 5.4 normal",
+        "Hgb 12.6 mild anemia (DAPT)",
+        "BNP 112"
+      ],
+      "medication": [
+        "Aspirin 81mg + Clopidogrel 75mg (DAPT, 9mo remaining)",
+        "Losartan 50mg (ACE intolerance)",
+        "Metoprolol succinate 50mg",
+        "Rosuvastatin 40mg",
+        "Sertraline 100mg",
+        "lisinopril intolerance"
+      ]
+    }
+  },
+  "coverage": {
+    "themes": {
+      "exertional_angina": [
+        "P0001"
+      ],
+      "lateral_ischemia": [
+        "P0001"
+      ],
+      "diabetes_control": [
+        "P0001"
+      ],
+      "statin_titration": [
+        "P0001"
+      ],
+      "community_acquired_pneumonia": [
+        "P0002"
+      ],
+      "infection_labs": [
+        "P0002"
+      ],
+      "reactive_tachycardia": [
+        "P0002"
+      ],
+      "normal_heart": [
+        "P0002"
+      ],
+      "healthy_wellness_exam": [
+        "P0003"
+      ],
+      "all_normal": [
+        "P0003"
+      ],
+      "no_cardiac_meds": [
+        "P0003"
+      ],
+      "acute_decompensated_hfref": [
+        "P0004"
+      ],
+      "volume_overload": [
+        "P0004"
+      ],
+      "afib": [
+        "P0004"
+      ],
+      "functional_mr": [
+        "P0004"
+      ],
+      "ace_allergy": [
+        "P0004"
+      ],
+      "worsening_ckd": [
+        "P0004"
+      ],
+      "benign_palpitations": [
+        "P0005"
+      ],
+      "PACs": [
+        "P0005"
+      ],
+      "young_healthy": [
+        "P0005"
+      ],
+      "caffeine": [
+        "P0005"
+      ],
+      "no_meds": [
+        "P0005"
+      ],
+      "copd_exacerbation": [
+        "P0006"
+      ],
+      "cor_pulmonale": [
+        "P0006"
+      ],
+      "pulmonary_hypertension": [
+        "P0006"
+      ],
+      "type2_respiratory_failure": [
+        "P0006"
+      ],
+      "aspirin_allergy": [
+        "P0006"
+      ],
+      "new_onset_afib": [
+        "P0007"
+      ],
+      "thyroid_excluded": [
+        "P0007"
+      ],
+      "anticoagulation_decision": [
+        "P0007"
+      ],
+      "iodine_allergy": [
+        "P0007"
+      ],
+      "poorly_controlled_dm2": [
+        "P0008"
+      ],
+      "hypertensive_heart_disease": [
+        "P0008"
+      ],
+      "lvh_strain": [
+        "P0008"
+      ],
+      "diabetic_nephropathy": [
+        "P0008"
+      ],
+      "cardiorenal_meds": [
+        "P0008"
+      ],
+      "severe_aortic_stenosis": [
+        "P0009"
+      ],
+      "exertional_syncope": [
+        "P0009"
+      ],
+      "as_murmur": [
+        "P0009"
+      ],
+      "lvh_pressure_overload": [
+        "P0009"
+      ],
+      "amlodipine_caution": [
+        "P0009"
+      ],
+      "tavr_workup": [
+        "P0009"
+      ],
+      "post_anterior_stemi": [
+        "P0010"
+      ],
+      "dapt": [
+        "P0010"
+      ],
+      "lv_recovery": [
+        "P0010"
+      ],
+      "prior_infarct_ecg": [
+        "P0010"
+      ],
+      "lisinopril_intolerance": [
+        "P0010"
+      ],
+      "depression": [
+        "P0010"
+      ]
+    },
+    "modality_fact_counts": {
+      "clinical_notes": 50,
+      "chest_xray": 31,
+      "ecg": 38,
+      "echo": 39,
+      "heart_sounds": 33,
+      "lab_results": 48,
+      "medication": 49
+    },
+    "total_facts": 288
+  }
+}
