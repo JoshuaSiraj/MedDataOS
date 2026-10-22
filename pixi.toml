@@ -10,7 +10,7 @@ python = ">=3.13,<3.14"
 
 [pypi-dependencies]
 meddataos = { path = ".", editable = true, extras = ["dev"] }
-med-datactrl = { path = "../med-datactrl", editable = true }
+med-datactrl = { git = "https://github.com/pmcdi/med-datactrl.git", branch = "alhusains/feat/clinical-notes-agent" }
 
 [tasks]
 serve = "python web/backend/server.py"
