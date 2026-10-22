@@ -109,12 +109,47 @@ Plain text is fine when the agent has not called `describe` or `fetch`. After ei
 
 ```json
 {
-  "response": "The planning CT and the contours show the larynx [cite:c1] [cite:c2].",
+  "response": "The planning CT shows the larynx [cite:c1]. The contours outline it [cite:c2]. Treatment finished on February 13 [cite:c3]. The dose was 51 Gy in 20 fractions [cite:c3].",
   "citations": [
-    {"cite": "c1", "summary": "CT slice."},
-    {"cite": "c2", "summary": "RTSTRUCT on the same slice."}
+    {
+      "cite": "c1",
+      "summary": "Axial planning CT of the neck. The larynx is included on the displayed slice."
+    },
+    {
+      "cite": "c2",
+      "summary": "RTSTRUCT for that planning CT. The larynx contour is named and outlined on the same slice.",
+      "fields": ["roi_names"]
+    },
+    {
+      "cite": "c3",
+      "agent": "clinical_notes",
+      "summary": "Radiation oncology completion note dated 13 February. External-beam treatment finished that day, 51 Gy in 20 fractions, with follow-up arranged in radiation oncology.",
+      "evidence": [
+        {
+          "n": 1,
+          "claim": "Treatment finished on February 13",
+          "quote": "Treatment completed February 13"
+        },
+        {
+          "n": 2,
+          "claim": "The prescribed dose was 51 Gy in 20 fractions",
+          "quote": "51 Gy in 20 fractions"
+        }
+      ],
+      "conflicts": [
+        {
+          "attribute": "rt.end_date",
+          "severity": "high",
+          "rationale": "The completion note and the follow-up note give different end dates.",
+          "values": [
+            {"value": "February 13", "note_label": "rt-completion", "start": 120, "end": 151},
+            {"value": "February 20", "note_label": "follow-up", "note_id": "note:followup", "start": 40, "end": 51}
+          ]
+        }
+      ]
+    }
   ]
 }
 ```
 
-Put `[cite:token]` right after the words that call supports. Several tokens may follow one claim. `cite` is the token on the `describe` or `fetch` result, and the marker uses that same token. The server fills in `id`, `file`, `web_path`, and the command before the page sees the reply. A specialist that did not call those tools cites `web_path` instead, with an `id` such as `1`, and that path must be a file in the open case.
+Put `[cite:token]` right after the words that call supports. A sentence may cite several calls, but the markers cannot sit side by side or be grouped at the end of the answer. `cite` is the token on the `describe` or `fetch` result, and the marker uses that same token. The server fills in `id`, `file`, `web_path`, and the command before the page sees the reply. The summary is two or three sentences of what that call shows: the finding, the date, and the measurement, so a reviewer can check the card without opening the file. A DICOM metadata citation may include `fields`, the metadata keys that support the claim. The values stay on the server. Read a note with `fetch` `view=text`. A citation of that call must include `evidence` with `quote`, a contiguous passage copied from the `text` that fetch returned. Several claims from one fetch are several evidence items on that one citation, each with its own `quote` from that same text, and the same `[cite:token]` goes after each of those claims. The server finds each passage, sets `start` and `end`, and fills `span_url`. It refuses a quote that is not in the note, and it refuses a quote that is the whole note. When notes disagree, the citation also sends `conflicts`. A specialist that did not call those tools cites `web_path` instead, with an `id` such as `1`, and that path must be a file in the open case. It may send `span_url` itself.

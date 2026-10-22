@@ -15,7 +15,7 @@ import os
 import urllib.error
 import urllib.request
 
-from case import Answer, Profile, case, path_key
+from case import Answer, Contract, Profile, case, path_key
 from registry import Specialist
 from state import log, short_session, state
 
@@ -219,14 +219,6 @@ def _client_for(url: str) -> AgentClient:
     )
 
 
-_SPECIALIST_RULE = (
-    "The reply may be plain text. "
-    f"{Answer.RULE} "
-    "If you did not call describe or fetch, each citation uses an id, file, and web_path, "
-    "and web_path must be a case file. The marker is then [cite:] plus that id."
-)
-
-
 def specialist_instructions() -> str:
     """Prompt for a specialist: cite case files, and do not call other agents."""
     return "\n".join([
@@ -234,8 +226,8 @@ def specialist_instructions() -> str:
         "Use the tools to read the files when you need them. "
         "Ground your answer in the files. "
         "Do not call another specialist.",
-        f"Citation rule: {_SPECIALIST_RULE}",
-        f"Example of a cited reply: {json.dumps(Answer.EXAMPLE)}",
+        f"Citation rule: {Contract.specialist_rule()}",
+        f"Example of a cited reply: {json.dumps(Contract.EXAMPLE)}",
         f"Case resources: {json.dumps(case.files())}",
     ])
 
@@ -401,8 +393,8 @@ class Question:
     def _instructions(self) -> str:
         lines = [
             self.PROMPT,
-            f"Citation rule: {Answer.RULE}",
-            f"Example of a cited reply: {json.dumps(Answer.EXAMPLE)}",
+            f"Citation rule: {Contract.RULE}",
+            f"Example of a cited reply: {json.dumps(Contract.EXAMPLE)}",
             f"Case resources: {json.dumps(case.files())}",
         ]
 

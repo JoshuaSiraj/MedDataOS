@@ -6,18 +6,29 @@ import copy
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from typing import ClassVar
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import quote, unquote, urlparse
 
 from datactrl.tools import TOOL_DEFINITIONS, dispatch
-
 from state import log, state
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
 
 
 def web_path(relative: str) -> str:
     parts = [quote(part) for part in Path(relative).parts if part not in ("", ".")]
     return "/case/" + "/".join(parts)
+
+
+def note_span_url(patient_id: str, doc_id: str, start: int, end: int) -> str:
+    """Page URL for one highlighted note span."""
+    return (
+        f"/api/cases/{quote(patient_id, safe='')}/notes/span"
+        f"?id={quote(doc_id, safe='')}&start={int(start)}&end={int(end)}"
+    )
 
 
 def path_key(path: object) -> str:
@@ -45,6 +56,11 @@ def path_key(path: object) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# Patient card
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class Profile:
     """Demographics the agent read out of the files. Empty until that reply arrives."""
@@ -63,7 +79,7 @@ class Profile:
     def from_agent(cls, data: object) -> Profile:
         """Keep only well-formed fields, so the page never renders unexpected types."""
         if not isinstance(data, dict):
-            raise ValueError("the card is not a JSON object")
+            raise TypeError("the card is not a JSON object")
 
         return cls(
             name=cls._text(data, "name"),
@@ -119,6 +135,11 @@ class Patient:
         return asdict(self)
 
 
+# ---------------------------------------------------------------------------
+# Open case
+# ---------------------------------------------------------------------------
+
+
 class Case:
     """The folder this server opened, and the tools that read it."""
 
@@ -138,6 +159,10 @@ class Case:
             for tool in TOOL_DEFINITIONS
             if "root" in tool["function"]["parameters"].get("properties", {})
         }
+
+    # -----------------------------------------------------------------------
+    # Inventory
+    # -----------------------------------------------------------------------
 
     def files(self) -> list[dict]:
         """Files the agent may cite. Reads the inventory lists discover actually returns."""
@@ -247,6 +272,10 @@ class Case:
             data_dates=info.get("data_dates") or {},
         )
 
+    # -----------------------------------------------------------------------
+    # Tools
+    # -----------------------------------------------------------------------
+
     def run(self, name: str, arguments: dict, session_id: str) -> dict:
         """Run one tool for a question and remember any file it opened."""
         agent_args = {
@@ -262,7 +291,7 @@ class Case:
 
         try:
             result = json.loads(dispatch(name, args))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — return the tool failure to the agent
             message = str(exc) or exc.__class__.__name__
             log("agent", f"tool {name} {detail} error: {message}")
             return {"status": "error", "name": name, "message": message}
@@ -278,8 +307,12 @@ class Case:
         log("agent", f"tool {name} {detail} ok")
         return payload
 
+    # -----------------------------------------------------------------------
+    # Delivered citations
+    # -----------------------------------------------------------------------
+
     def expand_citations(self, text: str, calls: dict[str, dict]) -> str:
-        """Fill file, web_path, command, and DICOM from the cite token on each citation."""
+        """Fill file, web_path, command, DICOM, and note span links from each cite token."""
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -302,20 +335,17 @@ class Case:
             if not isinstance(call, dict):
                 continue
 
-            citation["id"] = handle
-            citation["file"] = call["file"]
-            citation["web_path"] = call["web_path"]
-            citation["command"] = {"tool": call["tool"], "arguments": call["arguments"]}
-
-            if call.get("dicom"):
-                citation["dicom"] = call["dicom"]
-
+            Contract.apply(citation, call)
             changed = True
 
         if not changed:
             return text
 
         return json.dumps(parsed)
+
+    # -----------------------------------------------------------------------
+    # Calls remembered for the open question
+    # -----------------------------------------------------------------------
 
     def _remember(self, session_id: str, tool: str, agent_args: dict, result: dict) -> str | None:
         """Record this read and return its cite token, or None when it opened no file."""
@@ -344,11 +374,18 @@ class Case:
             },
             "file": path_key(ref.get("web_path")).rsplit("/", 1)[-1],
             "web_path": ref["web_path"],
+            "modality": ref.get("modality") or "",
+            "patient_id": state.root.name if state.root is not None else "",
         }
         dicom = self._call_dicom(ref, tool, agent_args, result)
 
         if dicom:
             record["dicom"] = dicom
+
+        span = self._call_span(ref, tool, agent_args, result)
+
+        if span:
+            record["span"] = span
 
         calls[token] = record
         return token
@@ -437,6 +474,60 @@ class Case:
         return preview
 
     @staticmethod
+    def _call_span(ref: dict, tool: str, args: dict, result: dict) -> dict:
+        """The note text a fetch returned, so a citation can be checked against it.
+
+        Offsets on the citation are into this text. ``origin`` is the file offset of
+        ``text[0]``: 0 for a text fetch, and the span start for a span fetch.
+        """
+        if ref.get("modality") != "note" or tool != "fetch":
+            return {}
+
+        view = result.get("view") or args.get("view")
+        raw_data = result.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        raw_text = data.get("text")
+        text = raw_text if isinstance(raw_text, str) else ""
+
+        if view not in ("text", "span") or not text.strip():
+            return {}
+
+        if view == "text":
+            start, end, origin = 0, len(text), 0
+        else:
+            start_at = Contract.as_int(data.get("start", args.get("start")))
+            end_at = Contract.as_int(data.get("end", args.get("end")))
+
+            if start_at is None or end_at is None or end_at <= start_at:
+                return {}
+
+            start, end, origin = start_at, end_at, start_at
+
+        span: dict[str, object] = {
+            "start": start,
+            "end": end,
+            "text": text,
+            "origin": origin,
+        }
+        section = data.get("section")
+
+        if isinstance(section, str) and section.strip():
+            span["section"] = section.strip()
+
+        meta_raw = ref.get("meta")
+        meta = meta_raw if isinstance(meta_raw, dict) else {}
+        note_date = meta.get("note_date")
+
+        if isinstance(note_date, str) and note_date.strip():
+            span["note_date"] = note_date.strip()
+
+        return span
+
+    # -----------------------------------------------------------------------
+    # Tool list shown to the agent
+    # -----------------------------------------------------------------------
+
+    @staticmethod
     def _exposed(tool: dict) -> dict:
         """The datactrl tool, without the arguments the server fills in."""
         spec = copy.deepcopy(tool)
@@ -451,32 +542,541 @@ class Case:
         return spec
 
 
-class Answer:
-    """One agent reply, judged against the files opened for its question."""
+# ---------------------------------------------------------------------------
+# Citation contract
+# ---------------------------------------------------------------------------
+
+
+class Contract:
+    """The citation deal: the text shown to the agent, the checks, and the fields the server fills."""
+
+    MAX_QUOTE = 280
 
     RULE = (
         "After describe or fetch, the reply is one JSON object with a \"response\" string "
         "and a \"citations\" list, like the example. "
         "Put [cite:token] right after the words that call supports. "
-        "Several tokens may follow one claim. A marker may not be the whole sentence. "
+        "A sentence may cite several calls, but never put markers side by side "
+        "or group them at the end of the answer. "
+        "A marker may not be the whole sentence. "
         "Each citation's cite is that same token from the tool result. "
-        "Do not send id, file, or web_path; the server fills those in."
+        "Do not send id, file, or web_path; the server fills those in. "
+        "The summary is two or three sentences of what that call shows: "
+        "the finding, the date, and the measurement. "
+        "A reviewer should be able to check the card without opening the file. "
+        "A DICOM metadata citation may include fields, the metadata keys that support the claim. "
+        "Do not copy the values; the server already stored them. "
+        "Read a note with fetch view=text. "
+        "A citation of that call must include evidence. "
+        "Each evidence item has n, claim, and quote. "
+        "quote is a contiguous passage copied from the text that fetch returned, "
+        "the words that support the claim, not the whole note. "
+        "Several claims from one fetch are several evidence items on that one citation. "
+        "Each item has its own quote copied from that same text. "
+        "Put the same [cite:token] after each of those claims. "
+        "Do not send start or end; the server finds the passage and fills span_url. "
+        "When notes disagree, also send conflicts. "
+        "Each conflict has attribute, severity, rationale, and values. "
+        "A value has value, note_label, and start and end in that note."
     )
 
     EXAMPLE: ClassVar[dict] = {
         "response": (
-            "The planning CT and the contours show the larynx [cite:c1] [cite:c2]. "
-            "Treatment finished on February 13 [cite:c3]."
+            "The planning CT shows the larynx [cite:c1]. "
+            "The contours outline it [cite:c2]. "
+            "Treatment finished on February 13 [cite:c3]. "
+            "The dose was 51 Gy in 20 fractions [cite:c3]."
         ),
         "citations": [
-            {"cite": "c1", "summary": "CT slice that supports the first claim."},
-            {"cite": "c2", "summary": "RTSTRUCT that supports the same claim."},
-            {"cite": "c3", "summary": "Note that supports the second sentence."},
+            {
+                "cite": "c1",
+                "summary": (
+                    "Axial planning CT of the neck. "
+                    "The larynx is included on the displayed slice."
+                ),
+            },
+            {
+                "cite": "c2",
+                "summary": (
+                    "RTSTRUCT for that planning CT. "
+                    "The larynx contour is named and outlined on the same slice."
+                ),
+                "fields": ["roi_names"],
+            },
+            {
+                "cite": "c3",
+                "agent": "clinical_notes",
+                "summary": (
+                    "Radiation oncology completion note dated 13 February. "
+                    "External-beam treatment finished that day, 51 Gy in 20 fractions, "
+                    "with follow-up arranged in radiation oncology."
+                ),
+                "evidence": [
+                    {
+                        "n": 1,
+                        "claim": "Treatment finished on February 13",
+                        "quote": "Treatment completed February 13",
+                    },
+                    {
+                        "n": 2,
+                        "claim": "The prescribed dose was 51 Gy in 20 fractions",
+                        "quote": "51 Gy in 20 fractions",
+                    },
+                ],
+                "conflicts": [{
+                    "attribute": "rt.end_date",
+                    "severity": "high",
+                    "rationale": "The completion note and the follow-up note give different end dates.",
+                    "values": [
+                        {
+                            "value": "February 13",
+                            "note_label": "rt-completion",
+                            "start": 120,
+                            "end": 151,
+                        },
+                        {
+                            "value": "February 20",
+                            "note_label": "follow-up",
+                            "note_id": "note:followup",
+                            "start": 40,
+                            "end": 51,
+                        },
+                    ],
+                }],
+            },
         ],
     }
 
     _MARKER = re.compile(r"\[cite:([^\]]+)\]")
+    _ADJACENT = re.compile(r"\[cite:[^\]]+\]\s*[,;]?\s*\[cite:[^\]]+\]")
+
+    # -----------------------------------------------------------------------
+    # Prompt
+    # -----------------------------------------------------------------------
+
+    @classmethod
+    def specialist_rule(cls) -> str:
+        """The citation rule for a specialist, which may cite a case file it did not fetch."""
+        return (
+            "The reply may be plain text. "
+            f"{cls.RULE} "
+            "If you did not call describe or fetch, each citation uses an id, file, and web_path, "
+            "and web_path must be a case file. The marker is then [cite:] plus that id."
+        )
+
+    # -----------------------------------------------------------------------
+    # Checks
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def has_marker(response: str) -> bool:
+        return Contract._MARKER.search(response) is not None
+
+    @staticmethod
+    def marker_problem(response: str) -> str | None:
+        """A marker follows the words it supports, and markers do not sit side by side."""
+        if clump := Contract._ADJACENT.search(response):
+            return (
+                f"The markers {clump.group(0)!r} sit side by side; "
+                "put each one right after the words that call supports."
+            )
+
+        protected = Contract._MARKER.sub(lambda match: match.group(0).replace(".", "\0"), response)
+        sentences = [part.replace("\0", ".").strip() for part in re.split(r"[.!?]+", protected)]
+
+        for sentence in sentences:
+            ids = Contract._MARKER.findall(sentence)
+
+            if ids and not Contract._MARKER.sub("", sentence).strip():
+                return f"[cite:{ids[0]}] stands alone; put it right after the words it supports."
+
+        return None
+
+    @staticmethod
+    def citation_problem(
+        citation: object,
+        response: str,
+        calls: dict[str, dict],
+        paths: dict[str, str],
+    ) -> str | None:
+        """Why this citation can't back the answer, or None."""
+        if not isinstance(citation, dict):
+            return "a citation is not an object"
+
+        if not isinstance(citation.get("summary"), str):
+            return "a citation needs a \"summary\" string"
+
+        handle = citation.get("cite")
+        marker = handle if isinstance(handle, str) and handle else citation.get("id")
+
+        if not isinstance(marker, str) or not re.fullmatch(r"\S+", marker):
+            return f"citation marker {marker!r} must be a string with no spaces"
+
+        if f"[cite:{marker}]" not in response:
+            return f"[cite:{marker}] does not appear in the response"
+
+        call = calls.get(handle) if isinstance(handle, str) else None
+        notes = Contract._notes_problem(citation, marker, call if isinstance(call, dict) else None)
+
+        if notes:
+            return notes
+
+        if isinstance(handle, str) and handle:
+            if handle not in calls:
+                return f"citation cite {handle!r} is not a tool result from this question"
+            return None
+
+        web = citation.get("web_path")
+
+        if path_key(web) in paths:
+            if not isinstance(citation.get("file"), str) or not citation["file"]:
+                return f'citation {marker} needs a "file" name'
+            return None
+
+        fetched = {path_key(call.get("web_path")) for call in calls.values()}
+
+        if path_key(web) in fetched:
+            return (
+                f"citation {marker} must use the cite token for that call, "
+                f"not web_path {web!r}"
+            )
+
+        if calls:
+            return f"citation {marker} needs the cite token from the tool result it uses"
+
+        return f"citation {marker} web_path {web!r} is not an opened file"
+
+    @staticmethod
+    def _notes_problem(citation: dict, marker: str, call: dict | None = None) -> str | None:
+        """Why the quotes or discrepancies on this citation are unusable, or None."""
+        evidence = citation.get("evidence", None)
+        fetched = Contract._fetched_text(call)
+
+        if evidence is not None and not isinstance(evidence, list):
+            return f"citation {marker} evidence must be a list"
+
+        if isinstance(evidence, list):
+            for item in evidence:
+                if not isinstance(item, dict):
+                    return f"citation {marker} evidence item must be an object"
+
+                if fetched is None and Contract._names_offsets(item) and Contract._span_offsets(item) is None:
+                    return (
+                        f"citation {marker} evidence start and end must be offsets "
+                        "with end greater than start"
+                    )
+
+                if fetched is not None:
+                    slice_problem = Contract._quote_problem(marker, item, fetched, call)
+
+                    if slice_problem:
+                        return slice_problem
+
+        if fetched is not None and not evidence:
+            return (
+                f"citation {marker} must include evidence with a quote copied "
+                "from the text that fetch returned"
+            )
+
+        conflicts = citation.get("conflicts", None)
+
+        if conflicts is not None and not isinstance(conflicts, list):
+            return f"citation {marker} conflicts must be a list"
+
+        if isinstance(conflicts, list):
+            for item in conflicts:
+                if not isinstance(item, dict):
+                    return f"citation {marker} conflict must be an object"
+
+                if not isinstance(item.get("attribute"), str) or not item["attribute"].strip():
+                    return f"citation {marker} conflict needs an attribute"
+
+                values = item.get("values")
+
+                if not isinstance(values, list) or not values:
+                    return f"citation {marker} conflict needs a values list"
+
+                for value in values:
+                    if not isinstance(value, dict) or not isinstance(value.get("value"), str):
+                        return f"citation {marker} conflict value needs a value string"
+
+                    if Contract._names_offsets(value) and Contract._span_offsets(value) is None:
+                        return (
+                            f"citation {marker} conflict start and end must be offsets "
+                            "with end greater than start"
+                        )
+
+        return None
+
+    @staticmethod
+    def _fetched_text(call: dict | None) -> str | None:
+        """The note text stored for this call, or None when there is nothing to check."""
+        if not isinstance(call, dict):
+            return None
+
+        span = call.get("span")
+
+        if not isinstance(span, dict):
+            return None
+
+        text = span.get("text")
+        return text if isinstance(text, str) and text else None
+
+    @staticmethod
+    def _quote_problem(marker: str, item: dict, text: str, call: dict | None) -> str | None:
+        """Refuse a quote that is not a passage in the fetched note."""
+        quote = item.get("quote")
+
+        if not isinstance(quote, str) or not quote.strip():
+            return f"citation {marker} evidence needs a quote copied from the note"
+
+        if len(text) > Contract.MAX_QUOTE and quote.strip() == text.strip():
+            return (
+                f"citation {marker} quotes the whole note; "
+                "copy the passage that supports the claim"
+            )
+
+        found = Contract._find_quote(text, quote, Contract._quote_hint(item, call))
+
+        if found is None:
+            return (
+                f"citation {marker} quote is not in the text that fetch returned; "
+                "copy a contiguous passage from that text"
+            )
+
+        return None
+
+    @staticmethod
+    def _quote_hint(item: dict, call: dict | None) -> int | None:
+        """A model offset, shifted into the fetched text, used when a quote occurs twice."""
+        hint = Contract.as_int(item.get("start", item.get("char_start")))
+
+        if hint is None or not isinstance(call, dict):
+            return hint
+
+        span = call.get("span")
+        origin = Contract.as_int(span.get("origin")) if isinstance(span, dict) else None
+
+        if origin:
+            return hint - origin
+
+        return hint
+
+    @staticmethod
+    def _find_quote(text: str, quote: str, hint: int | None) -> tuple[int, int] | None:
+        """Offsets of this passage in the fetched note, or None when it is absent."""
+        needle = quote.strip()
+
+        if not needle:
+            return None
+
+        starts = []
+        cursor = 0
+
+        while True:
+            found = text.find(needle, cursor)
+
+            if found < 0:
+                break
+
+            starts.append(found)
+            cursor = found + 1
+
+        if starts:
+            start = starts[0] if hint is None else min(starts, key=lambda item: abs(item - hint))
+            return start, start + len(needle)
+
+        return Contract._find_quote_loose(text, needle)
+
+    @staticmethod
+    def _find_quote_loose(text: str, needle: str) -> tuple[int, int] | None:
+        """Find a passage whose words match, allowing different spacing."""
+        flat_chars: list[str] = []
+        index_map: list[int] = []
+        previous_space = False
+
+        for index, char in enumerate(text):
+            if char.isspace():
+                if flat_chars and not previous_space:
+                    flat_chars.append(" ")
+                    index_map.append(index)
+                previous_space = True
+                continue
+
+            flat_chars.append(char)
+            index_map.append(index)
+            previous_space = False
+
+        flat_needle = " ".join(needle.split())
+        at = "".join(flat_chars).find(flat_needle)
+
+        if at < 0 or not index_map:
+            return None
+
+        start = index_map[at]
+        end = index_map[at + len(flat_needle) - 1] + 1
+        return start, end
+
+    # -----------------------------------------------------------------------
+    # Offsets
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _names_offsets(item: dict) -> bool:
+        return any(key in item for key in ("start", "end", "char_start", "char_end"))
+
+    @staticmethod
+    def _span_offsets(item: dict) -> tuple[int, int] | None:
+        """Character offsets on a quote or conflict value, or None when they are absent or invalid."""
+        start = Contract.as_int(item.get("start", item.get("char_start")))
+        end = Contract.as_int(item.get("end", item.get("char_end")))
+
+        if start is None and end is None:
+            return None
+
+        if start is None or end is None or end <= start or start < 0:
+            return None
+
+        return start, end
+
+    @staticmethod
+    def as_int(value: object) -> int | None:
+        if isinstance(value, bool) or value is None:
+            return None
+
+        if isinstance(value, int):
+            return value
+
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+
+        return None
+
+    # -----------------------------------------------------------------------
+    # Fields the server fills
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def apply(citation: dict, call: dict) -> None:
+        """Fill id, file, web_path, command, DICOM, and note span links from one cite token."""
+        citation["id"] = citation.get("cite")
+        citation["file"] = call["file"]
+        citation["web_path"] = call["web_path"]
+        citation["command"] = {"tool": call["tool"], "arguments": call["arguments"]}
+
+        if call.get("dicom"):
+            citation["dicom"] = call["dicom"]
+
+        Contract._fill_notes(citation, call)
+
+    @staticmethod
+    def _fill_notes(citation: dict, call: dict) -> None:
+        """Copy the note label onto each quote and fill span_url from the cited offsets."""
+        evidence = citation.get("evidence")
+        conflicts = citation.get("conflicts")
+        span = call.get("span") if isinstance(call.get("span"), dict) else None
+        has_notes = isinstance(evidence, list) or isinstance(conflicts, list)
+
+        if not has_notes:
+            return
+
+        arguments = call.get("arguments")
+        resource_id = arguments.get("resource_id") if isinstance(arguments, dict) else None
+        resource_id = resource_id if isinstance(resource_id, str) else ""
+        patient_raw = call.get("patient_id")
+        patient_id = patient_raw if isinstance(patient_raw, str) else ""
+
+        if isinstance(evidence, list):
+            for item in evidence:
+                if not isinstance(item, dict):
+                    continue
+
+                if not item.get("label") and call.get("file"):
+                    item["label"] = call["file"]
+
+                if not item.get("note_id") and resource_id:
+                    item["note_id"] = resource_id
+
+                Contract._place_quote(item, span)
+                note_id = item.get("note_id")
+                doc_id = note_id if isinstance(note_id, str) else resource_id
+                Contract._fill_span_url(item, patient_id, doc_id)
+
+        if isinstance(conflicts, list):
+            for conflict in conflicts:
+                if not isinstance(conflict, dict):
+                    continue
+
+                values = conflict.get("values")
+
+                if not isinstance(values, list):
+                    continue
+
+                for value in values:
+                    if not isinstance(value, dict):
+                        continue
+
+                    note_id = value.get("note_id")
+                    doc_id = note_id if isinstance(note_id, str) else resource_id
+                    Contract._fill_span_url(value, patient_id, doc_id)
+
+        if call.get("modality") == "note" and not citation.get("agent"):
+            citation["agent"] = "clinical_notes"
+
+    @staticmethod
+    def _place_quote(item: dict, span: dict | None) -> None:
+        """Turn offsets into the fetched text into file offsets, and copy the note label."""
+        if not isinstance(span, dict):
+            return
+
+        text = span.get("text") if isinstance(span.get("text"), str) else ""
+        origin = Contract.as_int(span.get("origin")) or 0
+        quote = item.get("quote")
+        found = None
+
+        if isinstance(quote, str):
+            found = Contract._find_quote(text, quote, Contract._quote_hint(item, {"span": span}))
+
+        if found:
+            local_start, local_end = found
+            item["quote"] = text[local_start:local_end]
+            item["start"] = origin + local_start
+            item["end"] = origin + local_end
+
+        if not item.get("note_date") and isinstance(span.get("note_date"), str):
+            item["note_date"] = span["note_date"]
+
+        if not item.get("section") and isinstance(span.get("section"), str):
+            item["section"] = span["section"]
+
+    @staticmethod
+    def _fill_span_url(item: dict, patient_id: str, doc_id: str) -> None:
+        """Point a quote at the span route when it names offsets and has no link yet."""
+        if item.get("span_url") or not patient_id or not doc_id:
+            return
+
+        offsets = Contract._span_offsets(item)
+
+        if offsets is None:
+            return
+
+        start, end = offsets
+        item["span_url"] = note_span_url(patient_id, doc_id, start, end)
+
+
+# ---------------------------------------------------------------------------
+# One reply
+# ---------------------------------------------------------------------------
+
+
+class Answer:
+    """One agent reply, judged against the files opened for its question."""
+
     _UNSET = object()
+
+    # -----------------------------------------------------------------------
+    # Judgment
+    # -----------------------------------------------------------------------
 
     def __init__(
         self,
@@ -509,7 +1109,7 @@ class Answer:
         text = (
             f"The server refused that answer. {self.problem} "
             "Send only one JSON object, with no sentences before or after it. "
-            f"{self.RULE} Example: {json.dumps(self.EXAMPLE)}"
+            f"{Contract.RULE} Example: {json.dumps(Contract.EXAMPLE)}"
         )
 
         if self.calls:
@@ -563,66 +1163,25 @@ class Answer:
                 f"It has keys: {keys}."
             )
 
-        if not self._MARKER.search(response):
+        if not Contract.has_marker(response):
             return "The response has no [cite:id] markers."
 
         problems = [
-            self._citation_problem(item, response, self._web_paths()) for item in citations
+            Contract.citation_problem(item, response, self.calls, self._web_paths())
+            for item in citations
         ]
 
         if not citations or all(problems):
             found = "; ".join(item for item in problems if item) or "the list is empty"
             return f"No citation is usable: {found}."
 
-        return self._marker_problem(response)
+        return Contract.marker_problem(response)
 
     def _is_json_object(self) -> bool:
         try:
             return isinstance(json.loads(self.text), dict)
         except json.JSONDecodeError:
             return False
-
-    def _citation_problem(self, citation: object, response: str, paths: dict[str, str]) -> str | None:
-        """Why this citation can't back the answer, or None."""
-        if not isinstance(citation, dict):
-            return "a citation is not an object"
-
-        if not isinstance(citation.get("summary"), str):
-            return "a citation needs a \"summary\" string"
-
-        handle = citation.get("cite")
-        marker = handle if isinstance(handle, str) and handle else citation.get("id")
-
-        if not isinstance(marker, str) or not re.fullmatch(r"\S+", marker):
-            return f"citation marker {marker!r} must be a string with no spaces"
-
-        if f"[cite:{marker}]" not in response:
-            return f"[cite:{marker}] does not appear in the response"
-
-        if isinstance(handle, str) and handle:
-            if handle not in self.calls:
-                return f"citation cite {handle!r} is not a tool result from this question"
-            return None
-
-        web = citation.get("web_path")
-
-        if path_key(web) in paths:
-            if not isinstance(citation.get("file"), str) or not citation["file"]:
-                return f'citation {marker} needs a "file" name'
-            return None
-
-        fetched = {path_key(call.get("web_path")) for call in self.calls.values()}
-
-        if path_key(web) in fetched:
-            return (
-                f"citation {marker} must use the cite token for that call, "
-                f"not web_path {web!r}"
-            )
-
-        if self.calls:
-            return f"citation {marker} needs the cite token from the tool result it uses"
-
-        return f"citation {marker} web_path {web!r} is not an opened file"
 
     def _web_paths(self) -> dict[str, str]:
         """Files a citation may name with web_path. A fetched file must use its cite token."""
@@ -634,19 +1193,6 @@ class Answer:
             if isinstance(item.get("web_path"), str)
             and path_key(item.get("web_path")) not in fetched
         }
-
-    def _marker_problem(self, response: str) -> str | None:
-        """A marker follows the words it supports and is not the whole sentence."""
-        protected = self._MARKER.sub(lambda match: match.group(0).replace(".", "\0"), response)
-        sentences = [part.replace("\0", ".").strip() for part in re.split(r"[.!?]+", protected)]
-
-        for sentence in sentences:
-            ids = self._MARKER.findall(sentence)
-
-            if ids and not self._MARKER.sub("", sentence).strip():
-                return f"[cite:{ids[0]}] stands alone; put it right after the words it supports."
-
-        return None
 
 
 case = Case()

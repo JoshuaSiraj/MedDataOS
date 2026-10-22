@@ -103,20 +103,95 @@ const DICOM_META_LABELS = {
     structure_set_label: 'Structure set',
     NumROIs: 'ROIs',
     RTPlanLabel: 'Plan',
+    RTPlanName: 'Plan name',
     DoseType: 'Dose type',
     DoseUnits: 'Dose units',
+    DoseSummationType: 'Dose sum',
+    PatientID: 'Patient',
+    StudyInstanceUID: 'Study UID',
+    SeriesInstanceUID: 'Series UID',
+    FrameOfReferenceUID: 'Frame of reference',
+    ReferencedSeriesUID: 'Referenced series',
+    child_series_ids: 'Child series',
+    child_modalities: 'Child modalities',
+    z_first_mm: 'Z first',
+    z_last_mm: 'Z last',
+    z_span_mm: 'Z span',
+    z_superior_mm: 'Z superior',
+    suggested_slice_index: 'Suggested slice',
+    preferred_roi: 'Preferred structure',
 };
 
-function renderDicomMeta(citation, limit) {
+const DICOM_CARD_KEYS = [
+    'Modality',
+    'SeriesDescription',
+    'StudyDescription',
+    'BodyPartExamined',
+    'instance_count',
+    'roi_names',
+    'RTPlanLabel',
+    'DoseType',
+    'DoseUnits',
+];
+
+const DICOM_ID_KEYS = [
+    'PatientID',
+    'StudyInstanceUID',
+    'SeriesInstanceUID',
+    'FrameOfReferenceUID',
+    'ReferencedSeriesUID',
+    'child_series_ids',
+    'child_modalities',
+];
+
+function dicomMetaPresent(metadata, key) {
+    const value = metadata[key];
+    if (value == null || value === '') return false;
+    return !(Array.isArray(value) && value.length === 0);
+}
+
+function dicomCitedFields(citation, metadata) {
+    if (!Array.isArray(citation.fields)) return [];
+    return citation.fields.filter(key => typeof key === 'string' && dicomMetaPresent(metadata, key));
+}
+
+function renderDicomMetaRows(metadata, keys, cited) {
+    const citedSet = new Set(cited);
+    const idSet = new Set(DICOM_ID_KEYS);
+    return `<dl class="dicom-meta">${keys.map(key => {
+        const rowClass = citedSet.has(key) ? ' class="dicom-meta-cited"' : '';
+        const valueClass = idSet.has(key) ? ' class="dicom-meta-id"' : '';
+        return `<div${rowClass}>`
+            + `<dt>${escapeHtml(DICOM_META_LABELS[key] || key)}</dt>`
+            + `<dd${valueClass}>${escapeHtml(dicomValue(metadata[key]))}</dd></div>`;
+    }).join('')}</dl>`;
+}
+
+function renderDicomMeta(citation, scope) {
     const metadata = dicomRecord(citation)?.metadata;
     if (!metadata) return '';
-    const rows = Object.keys(metadata)
-        .filter(key => metadata[key] != null && metadata[key] !== '')
-        .slice(0, limit || undefined);
-    if (!rows.length) return '';
-    return `<dl class="dicom-meta">${rows.map(key =>
-        `<div><dt>${escapeHtml(DICOM_META_LABELS[key] || key)}</dt><dd>${escapeHtml(dicomValue(metadata[key]))}</dd></div>`
-    ).join('')}</dl>`;
+    const cited = dicomCitedFields(citation, metadata);
+    if (scope === 'card') {
+        const keys = cited.length
+            ? cited
+            : DICOM_CARD_KEYS.filter(key => dicomMetaPresent(metadata, key));
+        return keys.length ? renderDicomMetaRows(metadata, keys, cited) : '';
+    }
+    const idSet = new Set(DICOM_ID_KEYS);
+    const rest = Object.keys(metadata).filter(key =>
+        !idSet.has(key) && dicomMetaPresent(metadata, key) && !DICOM_CARD_KEYS.includes(key)
+    );
+    const clinical = [
+        ...DICOM_CARD_KEYS.filter(key => dicomMetaPresent(metadata, key)),
+        ...rest,
+    ];
+    const ids = DICOM_ID_KEYS.filter(key => dicomMetaPresent(metadata, key));
+    const clinicalHTML = clinical.length ? renderDicomMetaRows(metadata, clinical, cited) : '';
+    const idHTML = ids.length
+        ? `<div class="dicom-meta-group">Identifiers</div>${renderDicomMetaRows(metadata, ids, cited)}`
+        : '';
+    const body = clinicalHTML + idHTML;
+    return body ? `<div class="dicom-meta-sheet">${body}</div>` : '';
 }
 
 async function loadPatients() {
@@ -404,8 +479,16 @@ function buildPinPreview(citation) {
         if (preview) {
             return `<div class="pinned-card-preview"><img class="dicom-preview" src="${dicomPreviewSrc(citation, preview)}" alt=""></div>`;
         }
-        const label = record.metadata?.Modality || 'DICOM';
-        return `<div class="pinned-card-preview"><span class="pinned-card-preview-label">${escapeHtml(String(label))}</span></div>`;
+        const metadata = record.metadata || {};
+        const modality = metadata.Modality || 'DICOM';
+        const series = metadata.SeriesDescription || metadata.structure_set_label || '';
+        if (!series) {
+            return `<div class="pinned-card-preview"><span class="pinned-card-preview-label">${escapeHtml(String(modality))}</span></div>`;
+        }
+        return `<div class="pinned-card-preview pinned-dicom-meta">`
+            + `<span class="pinned-dicom-modality">${escapeHtml(String(modality))}</span>`
+            + `<span class="pinned-dicom-series">${escapeHtml(String(series))}</span>`
+            + `</div>`;
     }
     const type = getCitationType(citation.file);
     if (type === 'image') {
@@ -459,7 +542,7 @@ function renderInsightsPanel() {
             card.dataset.pinType = 'citation';
             card.dataset.citation = JSON.stringify(p.citation);
             card.dataset.source = p.source || '';
-            const agentLabel = citationLabel(agentCardLabels, p.citation.agent);
+            const agentLabel = citationLabel(agentCardLabels, p.citation.agent, p.citation);
             const previewHTML = buildPinPreview(p.citation);
             const annotationText = p.annotations && p.annotations.text ? p.annotations.text : '';
             const annotationTags = p.annotations && p.annotations.tags && p.annotations.tags.length > 0 ? p.annotations.tags : [];
@@ -848,8 +931,13 @@ function removeFile() {
     fileName.textContent = '';
 }
 
-function citationLabel(labels, agent) {
-    if (!agent) return 'Source';
+function citationLabel(labels, agent, citation) {
+    if (!agent) {
+        if (citation && dicomPreviews(citation).length) return 'Imaging';
+        if (citation && dicomRecord(citation)?.metadata) return 'DICOM';
+        if (citation && dicomRecord(citation)) return 'Imaging';
+        return 'Source';
+    }
     return labels[agent] || String(agent).replace(/_/g, ' ');
 }
 
@@ -1047,7 +1135,7 @@ function renderWithCitations(html, citations) {
         const citation = citationMap[id];
         if (!citation) return match;
         const data = encodeURIComponent(JSON.stringify(citation));
-        const label = citationLabel(agentBadgeLabels, citation.agent);
+        const label = citationLabel(agentBadgeLabels, citation.agent, citation);
         const dateStr = getCitationDate(citation);
         return `<span class="citation-group"><sup class="citation" data-citation="${data}">${escapeHtml(label)}</sup>${dateStr ? `<span class="citation-date">${dateStr}</span>` : ''}</span>`;
     });
@@ -1258,12 +1346,17 @@ async function showCitationPopup(anchor, citation) {
     citationPopup._citation = citation;
 
     const type = dicomRecord(citation) ? 'dicom' : getCitationType(citation.file);
-    const agentLabel = citationLabel(agentCardLabels, citation.agent);
+    const agentLabel = citationLabel(agentCardLabels, citation.agent, citation);
     const dicomPreview = type === 'dicom' ? dicomPreviews(citation).at(-1) : null;
+    const dicomMetaOnly = type === 'dicom' && !dicomPreview && dicomRecord(citation)?.metadata;
 
     // Build initial content (immediate for media, loading state for text/csv)
     let contentHTML = '';
-    if (type === 'dicom' && dicomPreview) {
+    let contentClass = 'card-content';
+    if (dicomMetaOnly) {
+        contentHTML = renderDicomMeta(citation, 'card');
+        contentClass = 'card-content card-content-meta';
+    } else if (type === 'dicom' && dicomPreview) {
         contentHTML = `<img class="card-image dicom-preview" src="${dicomPreviewSrc(citation, dicomPreview)}" alt="${escapeHtml(agentLabel)}">`;
     } else if (type === 'image') {
         const isSvg = citation.file.endsWith('.svg');
@@ -1302,8 +1395,8 @@ async function showCitationPopup(anchor, citation) {
         ? `<div class="card-conflict">\u26A0 Contradicted by ${escapeHtml(conflict.firstAgent)}${conflict.count > 1 ? ` +${conflict.count - 1}` : ''}</div>`
         : '';
 
-    const dicomHTML = type === 'dicom'
-        ? `${dicomPreview ? `<div class="dicom-caption">${escapeHtml(dicomCaption(dicomPreview))}</div>` : ''}${renderDicomMeta(citation, 4)}`
+    const dicomHTML = type === 'dicom' && dicomPreview
+        ? `<div class="dicom-caption">${escapeHtml(dicomCaption(dicomPreview))}</div>`
         : '';
 
     citationPopup.innerHTML = `
@@ -1311,7 +1404,7 @@ async function showCitationPopup(anchor, citation) {
             <span class="card-agent">${escapeHtml(agentLabel)}</span>
             ${pinBtnHTML}
         </div>
-        ${contentHTML ? `<div class="card-content" id="card-content-inner">${contentHTML}</div>` : '<div id="card-content-inner"></div>'}
+        ${contentHTML ? `<div class="${contentClass}" id="card-content-inner">${contentHTML}</div>` : '<div id="card-content-inner"></div>'}
         ${dicomHTML}
         <div class="card-summary">${summaryHTML}</div>
         ${renderNotesConflicts(notesConflictsToShow(citation), true)}
@@ -1809,7 +1902,7 @@ async function openCitationModal(citation, pin = null, focusSpanUrl = null) {
     currentModalPin = pin;
 
     const type = dicomRecord(citation) ? 'dicom' : getCitationType(citation.file);
-    const agentLabel = citationLabel(agentCardLabels, citation.agent);
+    const agentLabel = citationLabel(agentCardLabels, citation.agent, citation);
 
     modalAgent.textContent = agentLabel;
 
@@ -1900,7 +1993,7 @@ async function openCitationModal(citation, pin = null, focusSpanUrl = null) {
             const main = index === all.length - 1 ? ' dicom-preview-main' : '';
             return `<figure class="dicom-figure${main}"><img class="dicom-preview" src="${dicomPreviewSrc(citation, preview)}" alt="${escapeHtml(agentLabel)}"><figcaption>${escapeHtml(dicomCaption(preview))}</figcaption></figure>`;
         }).join('');
-        contentHTML = figures + renderDicomMeta(citation);
+        contentHTML = figures + renderDicomMeta(citation, 'dialog');
     } else if (type === 'image') {
         const isSvg = citation.file.endsWith('.svg');
         contentHTML = `<img src="${citation.web_path}" alt="${escapeHtml(agentLabel)}"${isSvg ? ' class="modal-image-svg"' : ''}>`;

@@ -261,13 +261,54 @@ def cited_note(web_path: str) -> str:
     })
 
 
-def cited_handle(handle: str) -> str:
+def _note_slice(messages: list[dict]) -> dict | None:
+    """An exact slice of note text a tool result returned, for the fake agent to cite."""
+    for item in reversed(messages):
+        if item.get("role") != "tool":
+            continue
+
+        try:
+            payload = json.loads(item["content"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+
+        result = payload.get("result") if isinstance(payload, dict) else None
+        data = result.get("data") if isinstance(result, dict) else None
+        text = data.get("text") if isinstance(data, dict) else None
+
+        if not isinstance(text, str) or not text.strip():
+            continue
+
+        line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        start = text.find(line)
+
+        if start < 0 or not line:
+            continue
+
+        return {
+            "n": 1,
+            "claim": "Chief complaint: fatigue.",
+            "quote": line,
+            "start": start,
+            "end": start + len(line),
+        }
+
+    return None
+
+
+def cited_handle(handle: str, messages: list[dict] | None = None) -> str:
+    citation: dict = {
+        "cite": handle,
+        "summary": "Chief complaint: fatigue.",
+    }
+    evidence = _note_slice(messages or [])
+
+    if evidence:
+        citation["evidence"] = [evidence]
+
     return json.dumps({
         "response": f"The note records fatigue [cite:{handle}].",
-        "citations": [{
-            "cite": handle,
-            "summary": "Chief complaint: fatigue.",
-        }],
+        "citations": [citation],
     })
 
 
@@ -389,7 +430,7 @@ class FakeAgent(BaseHTTPRequestHandler):
             })
             return 200, self.message(content=alone)
 
-        if "[multi]" in question and has_read:
+        if "[multi]" in question and has_read and not corrected:
             handle = _cite_handle(messages)
             return 200, self.message(content=json.dumps({
                 "response": (
@@ -401,11 +442,29 @@ class FakeAgent(BaseHTTPRequestHandler):
                 }],
             }))
 
+        if "[multi]" in question and has_read:
+            handle = _cite_handle(messages)
+            citation: dict = {
+                "cite": handle,
+                "summary": "Chief complaint: fatigue.",
+            }
+            evidence = _note_slice(messages)
+
+            if evidence:
+                citation["evidence"] = [evidence]
+
+            return 200, self.message(content=json.dumps({
+                "response": (
+                    f"The CT records fatigue [cite:{handle}]. The note records it too [cite:{handle}]."
+                ),
+                "citations": [citation],
+            }))
+
         if "[discover]" in question and has_read:
             return 200, self.message(content="Discovered.")
 
         if has_read:
-            return 200, self.message(content=f"```json\n{cited_handle(_cite_handle(messages))}\n```")
+            return 200, self.message(content=f"```json\n{cited_handle(_cite_handle(messages), messages)}\n```")
 
         return 200, self.message(content="Plain answer.")
 
@@ -558,16 +617,16 @@ def test_server_runs_the_agents_tool_calls(dispatch_server):
     assert citation["command"]["arguments"]["resource_id"]
 
 
-def test_a_sentence_may_cite_several_files(dispatch_server):
+def test_server_rejects_markers_side_by_side(dispatch_server):
     question = "[read][multi] What does the note say?"
     session_id = send_chat(dispatch_server, question)["session_id"]
     answer = json.loads(wait_for_answer(dispatch_server, session_id)["history"][-1]["content"])
 
     assert answer["response"] == (
-        "The CT and the note both record fatigue [cite:c1] [cite:c1]."
+        "The CT records fatigue [cite:c1]. The note records it too [cite:c1]."
     )
-    assert not any(
-        item["role"] == "user" and item["content"].startswith("The server refused")
+    assert any(
+        item["role"] == "user" and "side by side" in item["content"]
         for item in requests_for(question)[-1]["messages"]
     )
 
@@ -1194,7 +1253,8 @@ def test_a_cite_handle_expands_to_the_call_that_made_it():
     }
     text = json.dumps({
         "response": (
-            "The tumour is contoured [cite:c2] [cite:c1]. "
+            "The tumour is contoured on the CT [cite:c2]. "
+            "The RTSTRUCT names that contour [cite:c1]. "
             "Treatment finished in February [cite:c3]."
         ),
         "citations": [
@@ -1218,6 +1278,223 @@ def test_a_cite_handle_expands_to_the_call_that_made_it():
     assert "dicom" not in parsed["citations"][2]
     assert parsed["citations"][2]["web_path"].endswith("rt-completion.txt")
     assert Answer(text, [], [], calls).problem is None
+    adjacent = text.replace(
+        "The RTSTRUCT names that contour [cite:c1].",
+        "[cite:c2] [cite:c1]",
+    )
+    assert Answer(adjacent, [], [], calls).problem
+
+
+def test_a_span_fetch_is_attached_to_the_citation():
+    sys.path.insert(0, str(APP / "web" / "backend"))
+    from case import case as open_case
+
+    span = open_case._call_span(
+        {"modality": "note", "meta": {"note_date": "2005-12-15"}},
+        "fetch",
+        {"view": "span", "start": 0, "end": 20},
+        {
+            "view": "span",
+            "data": {
+                "text": "Consultation for radiotherapy.",
+                "start": 0,
+                "end": 31,
+                "section": "History",
+            },
+        },
+    )
+    calls = {
+        "c1": {
+            "tool": "fetch",
+            "arguments": {"resource_id": "note:consult", "view": "span", "start": 0, "end": 31},
+            "file": "consult.txt",
+            "web_path": "/case/consult.txt",
+            "modality": "note",
+            "patient_id": "RADCURE-0006",
+            "span": span,
+        },
+    }
+    quote_text = "Consultation for radiotherapy."
+    text = json.dumps({
+        "response": "Consultation for radiotherapy occurred on 2005-12-15 [cite:c1].",
+        "citations": [{
+            "cite": "c1",
+            "summary": "Radiotherapy consult.",
+            "evidence": [{
+                "n": 1,
+                "claim": "Consultation for radiotherapy occurred on 2005-12-15",
+                "quote": quote_text,
+                "start": 4,
+                "end": 9,
+            }],
+        }],
+    })
+    from case import Answer
+    assert Answer(text, [], [], calls).problem is None
+    missing_quote = json.loads(text)
+    missing_quote["citations"][0]["evidence"][0].pop("quote")
+    assert "quote" in (Answer(json.dumps(missing_quote), [], [], calls).problem or "")
+
+    citation = json.loads(open_case.expand_citations(text, calls))["citations"][0]
+    quote = citation["evidence"][0]
+    assert citation["agent"] == "clinical_notes"
+    assert quote["quote"] == "Consultation for radiotherapy."
+    assert quote["start"] == 0
+    assert quote["end"] == 30
+    assert quote["note_date"] == "2005-12-15"
+    assert quote["section"] == "History"
+    assert quote["span_url"] == (
+        "/api/cases/RADCURE-0006/notes/span?id=note%3Aconsult&start=0&end=30"
+    )
+
+
+def test_a_note_citation_must_quote_an_exact_slice():
+    sys.path.insert(0, str(APP / "web" / "backend"))
+    from case import Answer, case as open_case
+
+    note = (
+        "Patient ID: RADCURE-0006\n"
+        "Date: 2005-12-15\n"
+        "Note Type: Radiation Oncology Consultation\n\n"
+        "Reason for Consultation:\n"
+        "Assessment for radiotherapy for early glottic laryngeal cancer.\n\n"
+        "History of Present Illness:\n"
+        "This is an 87-year-old male referred for management of biopsy-proven disease. "
+        "He reports several months of progressive hoarseness.\n\n"
+        "Plan:\n"
+        "Given early-stage glottic disease, recommend definitive radiation therapy alone. "
+        "No concurrent chemotherapy is indicated.\n"
+    )
+    stored = open_case._call_span(
+        {"modality": "note", "meta": {"note_date": "2005-12-15"}},
+        "fetch",
+        {"view": "text"},
+        {"view": "text", "data": {"text": note}},
+    )
+    assert stored["origin"] == 0
+    assert stored["text"] == note
+    calls = {
+        "c1": {
+            "tool": "fetch",
+            "arguments": {"resource_id": "note:consult", "view": "text"},
+            "file": "consult.txt",
+            "web_path": "/case/consult.txt",
+            "modality": "note",
+            "patient_id": "RADCURE-0006",
+            "span": stored,
+        },
+    }
+    quote = "Given early-stage glottic disease, recommend definitive radiation therapy alone."
+    start = note.find(quote)
+    cited = {
+        "response": "Definitive radiation alone was recommended [cite:c1].",
+        "citations": [{
+            "cite": "c1",
+            "summary": "Definitive radiation alone was recommended.",
+            "evidence": [{
+                "n": 1,
+                "claim": "Definitive radiation alone was recommended.",
+                "quote": quote,
+                "start": 1,
+                "end": 4,
+            }],
+        }],
+    }
+    text = json.dumps(cited)
+    assert Answer(text, [], [], calls).problem is None
+    citation = json.loads(open_case.expand_citations(text, calls))["citations"][0]
+    assert citation["evidence"][0]["quote"] == quote
+    assert citation["evidence"][0]["start"] == start
+    assert "Patient ID" not in citation["evidence"][0]["quote"]
+    assert citation["evidence"][0]["span_url"] == (
+        f"/api/cases/RADCURE-0006/notes/span?id=note%3Aconsult&start={start}&end={start + len(quote)}"
+    )
+
+    absent = json.loads(text)
+    absent["citations"][0]["evidence"][0]["quote"] = "chemotherapy was started yesterday"
+    assert "not in the text" in (Answer(json.dumps(absent), [], [], calls).problem or "")
+
+    missing = json.loads(text)
+    missing["citations"][0].pop("evidence")
+    assert "evidence" in (Answer(json.dumps(missing), [], [], calls).problem or "")
+
+    whole = json.loads(text)
+    whole["citations"][0]["evidence"] = [{
+        "n": 1,
+        "claim": "The consult.",
+        "quote": note,
+        "start": 0,
+        "end": len(note),
+    }]
+    assert "whole note" in (Answer(json.dumps(whole), [], [], calls).problem or "")
+
+
+def test_a_note_citation_keeps_quotes_and_gains_span_links():
+    sys.path.insert(0, str(APP / "web" / "backend"))
+    from case import Answer, case as open_case
+
+    calls = {
+        "c1": {
+            "tool": "fetch",
+            "arguments": {"resource_id": "note:completion", "view": "span", "start": 120, "end": 152},
+            "file": "rt-completion.txt",
+            "web_path": "/case/rt-completion.txt",
+            "modality": "note",
+            "patient_id": "RADCURE-0006",
+        },
+    }
+    text = json.dumps({
+        "response": "Treatment finished on February 13 [cite:c1].",
+        "citations": [{
+            "cite": "c1",
+            "summary": "The completion note records the last treatment date.",
+            "evidence": [{
+                "n": 1,
+                "claim": "Treatment finished on February 13",
+                "quote": "Treatment completed February 13",
+                "start": 120,
+                "end": 152,
+            }],
+            "conflicts": [{
+                "attribute": "rt.end_date",
+                "severity": "high",
+                "rationale": "Two notes give different end dates.",
+                "values": [
+                    {"value": "February 13", "note_label": "rt-completion", "start": 120, "end": 152},
+                    {
+                        "value": "February 20",
+                        "note_label": "follow-up",
+                        "note_id": "note:followup",
+                        "span_url": "/api/cases/RADCURE-0006/notes/span?id=note:followup&start=40&end=51",
+                        "start": 40,
+                        "end": 51,
+                    },
+                ],
+            }],
+        }],
+    })
+
+    parsed = json.loads(open_case.expand_citations(text, calls))
+    citation = parsed["citations"][0]
+    quote = citation["evidence"][0]
+    assert citation["agent"] == "clinical_notes"
+    assert citation["id"] == "c1"
+    assert quote["note_id"] == "note:completion"
+    assert quote["label"] == "rt-completion.txt"
+    assert quote["span_url"] == (
+        "/api/cases/RADCURE-0006/notes/span?id=note%3Acompletion&start=120&end=152"
+    )
+    assert citation["conflicts"][0]["values"][0]["span_url"].endswith("start=120&end=152")
+    assert citation["conflicts"][0]["values"][1]["span_url"].endswith("start=40&end=51")
+    assert Answer(text, [], [], calls).problem is None
+
+    missing_quote = json.loads(text)
+    missing_quote["citations"][0]["evidence"][0].pop("quote")
+    assert Answer(json.dumps(missing_quote), [], [], calls).problem is None
+
+    bad_offsets = json.loads(text)
+    bad_offsets["citations"][0]["evidence"][0]["end"] = 120
+    assert Answer(json.dumps(bad_offsets), [], [], calls).problem
 
     missing = json.dumps({
         "response": "The tumour is contoured [cite:c9].",
