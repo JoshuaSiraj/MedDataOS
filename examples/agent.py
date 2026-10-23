@@ -60,6 +60,9 @@ def forward(body: dict) -> tuple[int, dict]:
     if body.get("tools"):
         outgoing["tools"] = body["tools"]
 
+    if body.get("response_format"):
+        outgoing["response_format"] = body["response_format"]
+
     request = urllib.request.Request(
         url,
         data=json.dumps(outgoing).encode(),

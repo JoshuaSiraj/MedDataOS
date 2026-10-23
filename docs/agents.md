@@ -118,22 +118,25 @@ AZURE_OPENAI_API_VERSION=2024-10-21
 
 If no file was opened, the answer is shown when it is plain text and contains neither `[cite:` nor `"citations"`. A JSON object in that case is refused with a request for plain text. Text that does contain a citation marker is checked with the rules below, against every discovered file.
 
-If a file was opened, the whole answer must be one JSON object:
+If a file was opened, the whole answer must be one JSON object that matches `CitedAnswer` in `web/backend/answer.py`:
 
 ```json
 {
   "response": "The planning CT shows the larynx [cite:c1]. The contours outline it [cite:c2]. Treatment finished on February 13 [cite:c3]. The dose was 51 Gy in 20 fractions [cite:c3].",
   "citations": [
     {
+      "kind": "imaging",
       "cite": "c1",
       "summary": "Axial planning CT of the neck. The larynx is included on the displayed slice."
     },
     {
+      "kind": "imaging",
       "cite": "c2",
       "summary": "RTSTRUCT for that planning CT. The larynx contour is named and outlined on the same slice.",
       "fields": ["roi_names"]
     },
     {
+      "kind": "note",
       "cite": "c3",
       "agent": "clinical_notes",
       "summary": "Radiation oncology completion note dated 13 February. External-beam treatment finished that day, 51 Gy in 20 fractions, with follow-up arranged in radiation oncology.",
@@ -165,6 +168,10 @@ If a file was opened, the whole answer must be one JSON object:
 }
 ```
 
+Each citation has a `kind`, and the kind follows from the call its token came from: `imaging` for a DICOM series, `note` for a clinical note, `table` for a table, and `file` for a path cited without a token. An imaging citation has only `cite`, `summary`, and `fields`. A finding from a note is a separate note citation, with the token from that note's own fetch. The server refuses an imaging citation that carries `evidence`, `agent`, or `conflicts`, and any citation whose kind does not match its call. When `kind` is missing, the server uses the kind of the call.
+
+The system message includes the JSON schema of `CitedAnswer`, with its descriptions and examples. After the first `describe` or `fetch` in a question, the router's requests also send a strict copy of that schema as `response_format` (`type: json_schema`, `strict: true`), so a model that supports structured outputs replies in this shape. If the endpoint answers 400 or 422, the server retries that conversation without `response_format`, and then without tools. The schema checks the shape. The server still checks the references: the token is a call from this question, each quote is in the note, and where the markers sit.
+
 Put `[cite:token]` right after the words that call supports. A sentence may cite several calls, but the markers cannot sit side by side or be grouped at the end of the answer. `cite` is the token on the `describe` or `fetch` result, and the marker uses that same token. The server fills in `id`, `file`, `web_path`, and the command before the page sees the reply. The summary is two or three sentences of what that call shows: the finding, the date, and the measurement, so a reviewer can check the card without opening the file. A DICOM metadata citation may include `fields`, the metadata keys that support the claim. The values stay on the server. Read a note with `fetch` `view=text`. A citation of that call must include `evidence` with `quote`, a contiguous passage copied from the `text` that fetch returned. Several claims from one fetch are several evidence items on that one citation, each with its own `quote` from that same text, and the same `[cite:token]` goes after each of those claims. The server finds each passage, sets `start` and `end`, and fills `span_url`. It refuses a quote that is not in the note, and it refuses a quote that is the whole note. When notes disagree, the citation also sends `conflicts`. A specialist that did not call those tools cites `web_path` instead, with an `id` such as `1`, and that path must be a file in the open case. It may send `span_url` itself.
 
 A refused answer is appended to the conversation, followed by a user message that starts with `The server refused that answer.`, states the problem, repeats the rule and the example, and lists the opened `web_path` values. The server does this at most six times after the original answer. The next failure is shown on the page as `The agent could not produce an answer with valid citations. Last problem: …`.
@@ -175,6 +182,6 @@ Anything other than a chat completion (`choices[0].message` as an object), a con
 
 `pixi run agent` runs `examples/agent.py`. It listens on `127.0.0.1:8001` unless you pass `--host` and `--port`, and it accepts only `POST /v1/chat/completions`.
 
-It replaces `model` with `OPENAI_MODEL` and posts `messages`, plus `tools` when the request includes them, to `OPENAI_BASE_URL`. When `OPENAI_BASE_URL` is unset it uses `https://api.openai.com/v1`. `OPENAI_API_KEY` is sent as a bearer token when set. The example agent's own wait is 120 seconds. `AGENT_MODEL`, `AGENT_API_KEY`, and `AGENT_TIMEOUT` apply to the MedDataOS server's call, which this forwarder does not read.
+It replaces `model` with `OPENAI_MODEL` and posts `messages`, plus `tools` and `response_format` when the request includes them, to `OPENAI_BASE_URL`. When `OPENAI_BASE_URL` is unset it uses `https://api.openai.com/v1`. `OPENAI_API_KEY` is sent as a bearer token when set. The example agent's own wait is 120 seconds. `AGENT_MODEL`, `AGENT_API_KEY`, and `AGENT_TIMEOUT` apply to the MedDataOS server's call, which this forwarder does not read.
 
 Set `OPENAI_MODEL`, or `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_DEPLOYMENT`. Otherwise the example agent exits. Point `--agent-url` at another endpoint when you do not want this forwarder.

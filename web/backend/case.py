@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import quote, unquote, urlparse
 
+import answer
 from datactrl.tools import TOOL_DEFINITIONS, dispatch
 from state import log, state
 
@@ -553,99 +554,17 @@ class Contract:
     MAX_QUOTE = 280
 
     RULE = (
-        "After describe or fetch, the reply is one JSON object with a \"response\" string "
-        "and a \"citations\" list, like the example. "
+        "After describe or fetch, the reply is one JSON object that matches the answer schema. "
+        "Each citation's kind follows from the call its cite token came from: "
+        "imaging for a DICOM series, note for a clinical note, table for a table. "
         "Put [cite:token] right after the words that call supports. "
         "A sentence may cite several calls, but never put markers side by side "
         "or group them at the end of the answer. "
         "A marker may not be the whole sentence. "
-        "Each citation's cite is that same token from the tool result. "
-        "Do not send id, file, or web_path; the server fills those in. "
-        "The summary is two or three sentences of what that call shows: "
-        "the finding, the date, and the measurement. "
-        "A reviewer should be able to check the card without opening the file. "
-        "A DICOM metadata citation may include fields, the metadata keys that support the claim. "
-        "Do not copy the values; the server already stored them. "
-        "Read a note with fetch view=text. "
-        "A citation of that call must include evidence. "
-        "Each evidence item has n, claim, and quote. "
-        "quote is a contiguous passage copied from the text that fetch returned, "
-        "the words that support the claim, not the whole note. "
-        "Several claims from one fetch are several evidence items on that one citation. "
-        "Each item has its own quote copied from that same text. "
-        "Put the same [cite:token] after each of those claims. "
-        "Do not send start or end; the server finds the passage and fills span_url. "
-        "When notes disagree, also send conflicts. "
-        "Each conflict has attribute, severity, rationale, and values. "
-        "A value has value, note_label, and start and end in that note."
+        "Do not send id, file, or web_path on a cited call; the server fills those in."
     )
 
-    EXAMPLE: ClassVar[dict] = {
-        "response": (
-            "The planning CT shows the larynx [cite:c1]. "
-            "The contours outline it [cite:c2]. "
-            "Treatment finished on February 13 [cite:c3]. "
-            "The dose was 51 Gy in 20 fractions [cite:c3]."
-        ),
-        "citations": [
-            {
-                "cite": "c1",
-                "summary": (
-                    "Axial planning CT of the neck. "
-                    "The larynx is included on the displayed slice."
-                ),
-            },
-            {
-                "cite": "c2",
-                "summary": (
-                    "RTSTRUCT for that planning CT. "
-                    "The larynx contour is named and outlined on the same slice."
-                ),
-                "fields": ["roi_names"],
-            },
-            {
-                "cite": "c3",
-                "agent": "clinical_notes",
-                "summary": (
-                    "Radiation oncology completion note dated 13 February. "
-                    "External-beam treatment finished that day, 51 Gy in 20 fractions, "
-                    "with follow-up arranged in radiation oncology."
-                ),
-                "evidence": [
-                    {
-                        "n": 1,
-                        "claim": "Treatment finished on February 13",
-                        "quote": "Treatment completed February 13",
-                    },
-                    {
-                        "n": 2,
-                        "claim": "The prescribed dose was 51 Gy in 20 fractions",
-                        "quote": "51 Gy in 20 fractions",
-                    },
-                ],
-                "conflicts": [{
-                    "attribute": "rt.end_date",
-                    "severity": "high",
-                    "rationale": "The completion note and the follow-up note give different end dates.",
-                    "values": [
-                        {
-                            "value": "February 13",
-                            "note_label": "rt-completion",
-                            "start": 120,
-                            "end": 151,
-                        },
-                        {
-                            "value": "February 20",
-                            "note_label": "follow-up",
-                            "note_id": "note:followup",
-                            "start": 40,
-                            "end": 51,
-                        },
-                    ],
-                }],
-            },
-        ],
-    }
+    EXAMPLE: ClassVar[dict] = answer.EXAMPLE
 
     _MARKER = re.compile(r"\[cite:([^\]]+)\]")
     _ADJACENT = re.compile(r"\[cite:[^\]]+\]\s*[,;]?\s*\[cite:[^\]]+\]")
@@ -660,8 +579,8 @@ class Contract:
         return (
             "The reply may be plain text. "
             f"{cls.RULE} "
-            "If you did not call describe or fetch, each citation uses an id, file, and web_path, "
-            "and web_path must be a case file. The marker is then [cite:] plus that id."
+            "If you did not call describe or fetch, each citation has kind file, an id, file, "
+            "and web_path, and web_path must be a case file. The marker is then [cite:] plus that id."
         )
 
     # -----------------------------------------------------------------------
@@ -1165,6 +1084,17 @@ class Answer:
 
         if not Contract.has_marker(response):
             return "The response has no [cite:id] markers."
+
+        for item in citations:
+            if not isinstance(item, dict):
+                continue
+
+            handle = item.get("cite")
+            call = self.calls.get(handle) if isinstance(handle, str) else None
+            shape = answer.shape_problem(item, call)
+
+            if shape:
+                return shape
 
         problems = [
             Contract.citation_problem(item, response, self.calls, self._web_paths())

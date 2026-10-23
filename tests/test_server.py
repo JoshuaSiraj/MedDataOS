@@ -175,6 +175,10 @@ def test_server_requires_an_agent_url(case_folder):
 def test_example_agent_requires_a_model():
     env = {key: value for key, value in os.environ.items() if key != "OPENAI_MODEL"}
     env["OPENAI_MODEL"] = ""
+
+    for key in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT"):
+        env[key] = ""
+
     result = subprocess.run(
         [sys.executable, str(APP / "examples" / "agent.py")],
         env=env,
@@ -215,6 +219,9 @@ def test_example_agent_forwards_chat_completions():
         "OPENAI_MODEL": "real-model",
         "OPENAI_BASE_URL": f"http://127.0.0.1:{model.server_address[1]}/v1",
         "OPENAI_API_KEY": "secret",
+        "AZURE_OPENAI_API_KEY": "",
+        "AZURE_OPENAI_ENDPOINT": "",
+        "AZURE_OPENAI_DEPLOYMENT": "",
     }
     agent = subprocess.Popen(
         [sys.executable, str(APP / "examples" / "agent.py"), "--port", str(port)],
@@ -232,6 +239,7 @@ def test_example_agent_forwards_chat_completions():
                     "model": "example",
                     "messages": [{"role": "user", "content": "Say hello."}],
                     "tools": [{"type": "function", "function": {"name": "fetch"}}],
+                    "response_format": {"type": "json_schema", "json_schema": {"name": "cited_answer"}},
                 })
                 break
             except OSError:
@@ -243,6 +251,7 @@ def test_example_agent_forwards_chat_completions():
         forwarded = RecordingModel.requests[-1]
         assert forwarded["model"] == "real-model"
         assert forwarded["tools"][0]["function"]["name"] == "fetch"
+        assert forwarded["response_format"]["json_schema"]["name"] == "cited_answer"
     finally:
         agent.terminate()
         agent.wait(timeout=10)
@@ -398,6 +407,9 @@ class FakeAgent(BaseHTTPRequestHandler):
 
         if "[no tools]" in question and "tools" in body:
             return 400, {"error": {"message": "tools are not supported"}}
+
+        if "[no schema]" in question and "response_format" in body:
+            return 400, {"error": {"message": "response_format is not supported"}}
 
         if "[discover]" in question and not has_read:
             return 200, self.message(tool_calls=[{
@@ -657,6 +669,30 @@ def test_server_retries_without_tools_when_the_agent_refuses_them(dispatch_serve
 
     assert answer["content"] == "Plain answer."
     assert ["tools" in body for body in requests_for(question)] == [True, False]
+
+
+def test_the_answer_schema_is_sent_once_the_agent_has_read(dispatch_server):
+    question = "[read] Which schema does the note answer use?"
+    session_id = send_chat(dispatch_server, question)["session_id"]
+    answer = json.loads(wait_for_answer(dispatch_server, session_id)["history"][-1]["content"])
+
+    assert "[cite:c1]" in answer["response"]
+    bodies = requests_for(question)
+    assert ["response_format" in body for body in bodies] == [False, True]
+    sent = bodies[-1]["response_format"]
+    assert sent["type"] == "json_schema"
+    assert sent["json_schema"]["strict"] is True
+    assert "Answer schema, with examples:" in bodies[0]["messages"][0]["content"]
+
+
+def test_server_retries_without_the_schema_when_the_agent_refuses_it(dispatch_server):
+    question = "[read][no schema] What does the note say?"
+    session_id = send_chat(dispatch_server, question)["session_id"]
+    answer = json.loads(wait_for_answer(dispatch_server, session_id)["history"][-1]["content"])
+
+    assert "[cite:c1]" in answer["response"]
+    assert ["response_format" in body for body in requests_for(question)] == [False, True, False]
+    assert all("tools" in body for body in requests_for(question))
 
 
 def test_bad_tool_arguments_are_returned_to_the_agent(dispatch_server):
@@ -1283,6 +1319,87 @@ def test_a_cite_handle_expands_to_the_call_that_made_it():
         "[cite:c2] [cite:c1]",
     )
     assert Answer(adjacent, [], [], calls).problem
+
+
+def test_every_answer_schema_example_is_valid():
+    sys.path.insert(0, str(APP / "web" / "backend"))
+    import answer
+
+    for model in (
+        answer.Evidence,
+        answer.Conflict,
+        answer.ImagingCitation,
+        answer.NoteCitation,
+        answer.TableCitation,
+        answer.FileCitation,
+        answer.CitedAnswer,
+    ):
+        for example in model.model_config["json_schema_extra"]["examples"]:
+            model.model_validate(example)
+
+    assert json.loads(answer.prompt_schema())["examples"][0] == answer.EXAMPLE
+
+
+def test_the_strict_answer_schema_uses_only_what_strict_mode_accepts():
+    sys.path.insert(0, str(APP / "web" / "backend"))
+    import answer
+
+    schema = answer.response_format()["json_schema"]["schema"]
+    rejected = {"oneOf", "const", "examples", "default", "title", "discriminator", "minItems"}
+
+    def walk(node):
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        assert not rejected & set(node)
+
+        if node.get("type") == "object" and "properties" in node:
+            assert node["additionalProperties"] is False
+            assert node["required"] == list(node["properties"])
+
+        for key, value in node.items():
+            walk(list(value.values()) if key in ("properties", "$defs") else value)
+
+    walk(schema)
+    assert set(schema["$defs"]) >= {"ImagingCitation", "NoteCitation", "TableCitation"}
+
+
+def test_a_dicom_call_must_be_cited_as_imaging():
+    sys.path.insert(0, str(APP / "web" / "backend"))
+    from case import Answer
+
+    calls = {
+        "c1": {
+            "tool": "fetch",
+            "arguments": {"resource_id": "dicom:ct", "view": "preview", "slice_index": 77},
+            "modality": "dicom",
+            "file": "ct",
+            "web_path": "/case/ct",
+        },
+    }
+
+    def problem(citation: dict) -> str | None:
+        text = json.dumps({
+            "response": "The tumour sits at the glottic larynx [cite:c1].",
+            "citations": [{"cite": "c1", "summary": "Slice 77.", **citation}],
+        })
+        return Answer(text, [], [], calls).problem
+
+    assert problem({}) is None
+    assert problem({"kind": "imaging", "fields": ["SliceThickness"]}) is None
+    assert problem({"kind": "imaging", "web_path": "/case/ct"}) is None
+
+    as_note = problem({"kind": "note"})
+    assert "kind 'note'" in as_note and "'imaging'" in as_note
+
+    with_evidence = problem({"evidence": [{"claim": "Tumour", "quote": "glottic"}]})
+    assert "evidence is not allowed" in with_evidence
+    assert "that note's own fetch" in with_evidence
 
 
 def test_a_span_fetch_is_attached_to_the_citation():

@@ -14,7 +14,9 @@ import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
+import answer
 from case import Answer, Contract, Profile, case, path_key
 from registry import Specialist
 from state import log, short_session, state
@@ -55,7 +57,12 @@ class AgentClient:
             float(os.getenv("AGENT_TIMEOUT", "120")),
         )
 
-    def complete(self, messages: list[dict], tools: list[dict]) -> dict:
+    def complete(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        response_format: dict | None = None,
+    ) -> dict:
         """One chat completions request. Returns the assistant message."""
         headers = {"Content-Type": "application/json"}
 
@@ -66,6 +73,9 @@ class AgentClient:
 
         if tools:
             body["tools"] = tools
+
+        if response_format:
+            body["response_format"] = response_format
 
         request = urllib.request.Request(
             f"{self.url}/chat/completions",
@@ -119,6 +129,7 @@ class Conversation:
         tools: list[dict] | None = None,
         consult: bool = False,
         max_steps: int | None = None,
+        answer_format: Callable[[], dict | None] | None = None,
     ) -> None:
         self.messages = messages
         self.session_id = session_id
@@ -126,6 +137,7 @@ class Conversation:
         self.tools = list(case.tools if tools is None else tools)
         self.consult = consult
         self.max_steps = self.MAX_STEPS if max_steps is None else max_steps
+        self.answer_format = answer_format
 
     async def reply(self) -> str:
         """Call the agent until it stops asking for tools, then return its text."""
@@ -147,10 +159,22 @@ class Conversation:
         raise AgentError(f"no answer after {self.max_steps} steps")
 
     async def _next(self) -> dict:
+        response_format = self.answer_format() if self.answer_format else None
+
         try:
-            return await asyncio.to_thread(self.client.complete, self.messages, self.tools)
+            return await asyncio.to_thread(
+                self.client.complete, self.messages, self.tools, response_format
+            )
         except AgentError as exc:
-            if not self.tools or exc.status not in (400, 422):
+            if exc.status not in (400, 422):
+                raise
+
+            if response_format:
+                log("server", "agent refused the answer schema, retrying without it")
+                self.answer_format = None
+                return await self._next()
+
+            if not self.tools:
                 raise
 
         log("server", "agent refused the tool list, retrying without it")
@@ -227,7 +251,7 @@ def specialist_instructions() -> str:
         "Ground your answer in the files. "
         "Do not call another specialist.",
         f"Citation rule: {Contract.specialist_rule()}",
-        f"Example of a cited reply: {json.dumps(Contract.EXAMPLE)}",
+        f"Answer schema, with examples: {answer.prompt_schema()}",
         f"Case resources: {json.dumps(case.files())}",
     ])
 
@@ -352,6 +376,7 @@ class Question:
             self.session_id,
             tools=router_tools(),
             consult=bool(state.specialists),
+            answer_format=self._answer_format,
         )
         problem = ""
 
@@ -390,11 +415,15 @@ class Question:
         finally:
             state.consulted.pop(self.session_id, None)
 
+    def _answer_format(self) -> dict | None:
+        """The answer schema, once a describe or fetch means the reply must be cited."""
+        return answer.response_format() if state.calls.get(self.session_id) else None
+
     def _instructions(self) -> str:
         lines = [
             self.PROMPT,
             f"Citation rule: {Contract.RULE}",
-            f"Example of a cited reply: {json.dumps(Contract.EXAMPLE)}",
+            f"Answer schema, with examples: {answer.prompt_schema()}",
             f"Case resources: {json.dumps(case.files())}",
         ]
 

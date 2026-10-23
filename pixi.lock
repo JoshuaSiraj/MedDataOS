@@ -40,7 +40,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/05/d1/8952806fbf9583004ab479d8f58a9496c3d35f6b6009ddd458bdd9978eaf/dpath-2.2.0-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/f3/48/3cd6f8f30857fef456c03ae1ef89c1a82aba8a3a229896c28967b49849e1/fastapi-0.161.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/45/2a/101012d82931d9de3855384e1667e49c0e07a0048e3868f9fec1697293a9/fastapi-0.161.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/61/bf/fd60001b3abc5222d8eaa4a204cd8c0ae78e75adc688f33ce4bf25b7fafa/fasteners-0.19-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a8/26/939ae9874dd44116f2ecf61cb0caf029e3004ec1ed311a86389dee3450be/fonttools-4.67.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -55,7 +55,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a9/df/e7c10292f348cf55178a5b3c0092a38ea68891a3945f199ae8b7b8ac9dc1/matplotlib-3.11.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl
-      - pypi: git+https://github.com/pmcdi/med-datactrl.git?branch=alhusains%2Ffeat%2Fclinical-notes-agent#de84305f6d5f4b8e66c3f9a64e9fdf1023167594
+      - pypi: git+https://github.com/pmcdi/med-datactrl.git#de84305f6d5f4b8e66c3f9a64e9fdf1023167594
       - pypi: https://files.pythonhosted.org/packages/f6/46/e38a15232d468dbe949e615fac303d4015c59c490b11b5e3d4545f2028a1/med_imagetools-2.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/7e/cd/fe58041e9011f307c490e3e17dd48cc516448f7c698a3f2d9d9d65d7e6a8/networkx-3.7-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/da/24/3bd070f3269dc609d8f26b2643f62ef91bb415841c0b294805aaf7fe06da/numpy-2.5.4-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
@@ -213,10 +213,10 @@ packages:
   version: 2.2.0
   sha256: b330a375ded0a0d2ed404440f6c6a715deae5313af40bbb01c8a41d891900576
   requires_python: '>=3.7'
-- pypi: https://files.pythonhosted.org/packages/f3/48/3cd6f8f30857fef456c03ae1ef89c1a82aba8a3a229896c28967b49849e1/fastapi-0.161.0-py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/45/2a/101012d82931d9de3855384e1667e49c0e07a0048e3868f9fec1697293a9/fastapi-0.161.1-py3-none-any.whl
   name: fastapi
-  version: 0.161.0
-  sha256: 843d71746b18a3349e2c0b56993631788e6d89381c1973d7d8f4aa098f623ecb
+  version: 0.161.1
+  sha256: a1363080cf9aeedecd99f4e1a23669d7e77542227f6536f4d7bbd59f07ecaa94
   requires_dist:
   - starlette>=0.46.0
   - pydantic>=2.9.0
@@ -643,7 +643,7 @@ packages:
   version: 0.1.2
   sha256: 84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
   requires_python: '>=3.7'
-- pypi: git+https://github.com/pmcdi/med-datactrl.git?branch=alhusains%2Ffeat%2Fclinical-notes-agent#de84305f6d5f4b8e66c3f9a64e9fdf1023167594
+- pypi: git+https://github.com/pmcdi/med-datactrl.git#de84305f6d5f4b8e66c3f9a64e9fdf1023167594
   name: med-datactrl
   version: 0.2.0
   requires_dist:
@@ -687,13 +687,14 @@ packages:
 - pypi: ./
   name: meddataos
   version: 0.1.0
-  sha256: 2b8b09c4fdf30601e80090b84d83f155462036ce713549eacdeae1b0917909e4
+  sha256: 226b1cd7d6e7e46f8e16769eccd3cfd738d73c6a8bb2f92cc8e53043d536ec29
   requires_dist:
   - fastapi>=0.104.0,<1
   - uvicorn[standard]>=0.24.0,<1
   - python-multipart>=0.0.6,<1
   - websockets>=12.0,<18
   - python-dotenv>=1.0.0,<2
+  - pydantic>=2.6,<3
   - med-datactrl>=0.2.0,<0.3
   - pytest>=8.0.0,<10 ; extra == 'dev'
   requires_python: '>=3.13,<3.14'
